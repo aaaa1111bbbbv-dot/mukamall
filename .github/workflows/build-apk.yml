@@ -92,8 +92,8 @@ jobs:
                   applicationId = "uz.qoriqlash.app"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 14
-                  versionName = "3.4-mukamal"
+                  versionCode = 16
+                  versionName = "4.0-cyber-pro"
               }
 
               buildTypes {
@@ -125,7 +125,6 @@ jobs:
               implementation("androidx.camera:camera-camera2:1.3.4")
               implementation("androidx.camera:camera-lifecycle:1.3.4")
               implementation("androidx.camera:camera-view:1.3.4")
-              implementation("androidx.camera:camera-video:1.3.4")
               implementation("androidx.security:security-crypto:1.1.0-alpha06")
               implementation("androidx.biometric:biometric:1.1.0")
               implementation("com.google.mlkit:face-detection:16.1.7")
@@ -223,7 +222,7 @@ jobs:
           import java.util.UUID
 
           object SecureStore {
-              private const val PREF_NAME = "qoriqlash_vault_v3"
+              private const val PREF_NAME = "qoriqlash_vault_v4"
               private const val CREATOR_CODE_HASH = "e69b7525e846a20b5663e0d3f7510f72b3e302212650d1c0c563a3560d481b39"
 
               private fun prefs(ctx: Context): SharedPreferences {
@@ -282,11 +281,16 @@ jobs:
               fun getClientName(ctx: Context): String = prefs(ctx).getString("client_name", "") ?: ""
               fun getClientPhone(ctx: Context): String = prefs(ctx).getString("client_phone", "") ?: ""
 
+              // Token faqat bir marta yoziladi va AES-256 bilan shifrlanadi
               fun setCustomToken(ctx: Context, token: String) {
-                  prefs(ctx).edit().putString("custom_gh_token", token.trim()).apply()
+                  val clean = token.trim()
+                  if (clean.isNotEmpty()) {
+                      prefs(ctx).edit().putString("custom_gh_token_enc", clean).apply()
+                  }
               }
 
-              fun getCustomToken(ctx: Context): String = prefs(ctx).getString("custom_gh_token", "") ?: ""
+              fun getCustomToken(ctx: Context): String = prefs(ctx).getString("custom_gh_token_enc", "") ?: ""
+              fun hasCustomToken(ctx: Context): Boolean = getCustomToken(ctx).isNotEmpty()
 
               fun setRemoteControlState(
                   ctx: Context,
@@ -437,13 +441,17 @@ jobs:
                   val code: String,
                   val message: String,
                   val expiresAt: String,
-                  val syncStatus: String
+                  val syncStatus: String,
+                  val tokenConfigured: Boolean
               )
 
-              private fun getActiveToken(ctx: Context): String {
+              fun getActiveToken(ctx: Context): String {
                   val manual = SecureStore.getCustomToken(ctx).trim()
                   if (manual.startsWith("ghp_") || manual.startsWith("github_pat_")) return manual
-                  if (EMBEDDED_TOKEN.startsWith("ghp_") || EMBEDDED_TOKEN.startsWith("github_pat_")) return EMBEDDED_TOKEN
+                  if (EMBEDDED_TOKEN.startsWith("ghp_") || EMBEDDED_TOKEN.startsWith("github_pat_")) {
+                      SecureStore.setCustomToken(ctx, EMBEDDED_TOKEN)
+                      return EMBEDDED_TOKEN
+                  }
                   return ""
               }
 
@@ -498,7 +506,8 @@ jobs:
                   }
 
                   val tok = getActiveToken(ctx)
-                  if (tok.isNotEmpty()) {
+                  val hasTok = tok.isNotEmpty()
+                  if (hasTok) {
                       val userSync = syncUserRecordWithGitHub(ctx, tok, isMonitoringRunning, globalMsg)
                       if (userSync != null) {
                           val finalActive = globalActive && userSync.first
@@ -510,7 +519,7 @@ jobs:
                               globalMsg
                           }
                           SecureStore.setRemoteControlState(ctx, finalActive, globalCode, finalMsg, userSync.third)
-                          return RemoteState(finalActive, globalCode, finalMsg, userSync.third, "✅ Admin serverga ulangan")
+                          return RemoteState(finalActive, globalCode, finalMsg, userSync.third, "🔒 Server ulangan (Shifrlangan)", true)
                       }
                   }
 
@@ -523,8 +532,8 @@ jobs:
                       globalMsg.ifEmpty { SecureStore.getRemoteMessage(ctx) }
                   }
                   SecureStore.setRemoteControlState(ctx, finalAct, globalCode, finalMsg, cachedExp)
-                  val stLabel = if (tok.isEmpty()) "⚠️ Server tokeni kiritilmagan" else "⚠️ Serverga ulanishda xato"
-                  return RemoteState(finalAct, globalCode, finalMsg, cachedExp, stLabel)
+                  val stLabel = if (!hasTok) "⚠️ Server tokeni kiritilmagan" else "🔒 Token saqlangan · Oflayn rejim"
+                  return RemoteState(finalAct, globalCode, finalMsg, cachedExp, stLabel, hasTok)
               }
 
               private fun syncUserRecordWithGitHub(
@@ -640,7 +649,6 @@ jobs:
           }
           EOF
 
-          # GitHub Secret'ni Kotlin faylga xavfsiz joylashtirish
           if [ -n "$GH_SECRET_TOKEN" ]; then
             sed -i "s|__GH_SECRET_PLACEHOLDER__|$GH_SECRET_TOKEN|g" app/src/main/java/uz/qoriqlash/app/RemoteControlClient.kt
           fi
@@ -714,7 +722,7 @@ jobs:
                   if (url.isBlank()) return null
                   val baseReq = Request.Builder()
                       .url(url.trim())
-                      .header("User-Agent", "QoriqlashGuard/3.4")
+                      .header("User-Agent", "QoriqlashGuard/4.0")
                       .header("Accept", "image/jpeg,image/*,*/*")
                       .build()
 
@@ -1327,6 +1335,7 @@ jobs:
           import android.os.IBinder
           import android.os.Looper
           import android.os.PowerManager
+          import android.util.Size
           import androidx.camera.core.CameraSelector
           import androidx.camera.core.ImageAnalysis
           import androidx.camera.core.ImageProxy
@@ -1445,6 +1454,7 @@ jobs:
               private val prevIpGrayMap = ConcurrentHashMap<String, ByteArray>()
               private val lastAlertMsMap = ConcurrentHashMap<String, Long>()
               @Volatile private var lastFrameConvertMs = 0L
+              @Volatile private var lastFrameAnalyzeMs = 0L
 
               private val ringBufferLock = Any()
               private val rollingFrames = ArrayDeque<ByteArray>()
@@ -1488,7 +1498,7 @@ jobs:
                       val cfg = SecureStore.loadConfig(this@MonitorForegroundService)
                       pollTelegramCommands(cfg)
                       flushOfflineQueue(cfg)
-                      mainHandler.postDelayed(this, 3500L)
+                      mainHandler.postDelayed(this, 4000L)
                   }
               }
 
@@ -1507,7 +1517,7 @@ jobs:
                               }
                           }
                       }
-                      mainHandler.postDelayed(this, 45_000L)
+                      mainHandler.postDelayed(this, 60_000L)
                   }
               }
 
@@ -1546,7 +1556,7 @@ jobs:
                           SecureStore.setWasRunning(this, true)
                           val cfg = SecureStore.loadConfig(this)
                           applyConfiguration(cfg)
-                          addEvent("🛡 Qo‘riqlash Pro tizimi ishga tushdi")
+                          addEvent("🛡 Qo‘riqlash Cyber-Pro tizimi ishga tushdi")
                       }
                       ACTION_STOP -> {
                           manualStopped = true
@@ -1633,10 +1643,10 @@ jobs:
                   }
 
                   mainHandler.removeCallbacks(botPollRunnable)
-                  mainHandler.postDelayed(botPollRunnable, 2000L)
+                  mainHandler.postDelayed(botPollRunnable, 2500L)
 
                   mainHandler.removeCallbacks(remoteSyncRunnable)
-                  mainHandler.postDelayed(remoteSyncRunnable, 5000L)
+                  mainHandler.postDelayed(remoteSyncRunnable, 6000L)
               }
 
               private fun stopAllLoops() {
@@ -1648,6 +1658,7 @@ jobs:
                   unbindPhoneCamera()
               }
 
+              @Suppress("DEPRECATION")
               private fun bindPhoneCamera() {
                   val future = ProcessCameraProvider.getInstance(this)
                   future.addListener({
@@ -1664,6 +1675,7 @@ jobs:
                           }
 
                           val analysis = ImageAnalysis.Builder()
+                              .setTargetResolution(Size(640, 480))
                               .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                               .build()
 
@@ -1673,7 +1685,10 @@ jobs:
 
                           val sp = previewSurfaceProvider.get()
                           if (uiVisible.get() && sp != null) {
-                              val preview = Preview.Builder().build().also { it.setSurfaceProvider(sp) }
+                              val preview = Preview.Builder()
+                                  .setTargetResolution(Size(640, 480))
+                                  .build()
+                                  .also { it.setSurfaceProvider(sp) }
                               provider.bindToLifecycle(this, selector, preview, analysis)
                           } else {
                               provider.bindToLifecycle(this, selector, analysis)
@@ -1694,6 +1709,11 @@ jobs:
               private fun processPhoneFrame(image: ImageProxy) {
                   try {
                       if (!isRunning) return
+                      val nowMs = System.currentTimeMillis()
+                      // Soniyasiga max 5 kadr tahlil qilinadi -> CPU hech qachon qotmaydi
+                      if (nowMs - lastFrameAnalyzeMs < 200L) return
+                      lastFrameAnalyzeMs = nowMs
+
                       val cfg = SecureStore.loadConfig(this)
                       val mode = cfg.optString("mode", "phone")
                       if (mode != "phone" && mode != "both") return
@@ -1701,11 +1721,12 @@ jobs:
                       val yPlane = image.planes[0]
                       val yBuf = yPlane.buffer
                       val rowStride = yPlane.rowStride
+                      val pixelStride = yPlane.pixelStride
                       val w = image.width
                       val h = image.height
 
-                      val gridW = 64
-                      val gridH = 48
+                      val gridW = 48
+                      val gridH = 36
                       val currGray = ByteArray(gridW * gridH)
                       var brightnessSum = 0L
                       var idx = 0
@@ -1714,24 +1735,23 @@ jobs:
                           val rowOffset = sy * rowStride
                           for (gx in 0 until gridW) {
                               val sx = (gx * w) / gridW
-                              val pos = rowOffset + sx
+                              val pos = rowOffset + sx * pixelStride
                               val v = if (pos < yBuf.limit()) (yBuf.get(pos).toInt() and 0xFF) else 0
                               currGray[idx++] = v.toByte()
                               brightnessSum += v
                           }
                       }
 
-                      val nowMs = System.currentTimeMillis()
-                      val needJpegNow = (nowMs - lastFrameConvertMs >= 320L) || recordingClip.get()
+                      val needJpegNow = (nowMs - lastFrameConvertMs >= 450L) || recordingClip.get()
                       var jpegBytes: ByteArray? = latestFullJpeg.get()
                       if (needJpegNow) {
-                          val fresh = imageProxyToJpeg(image, 76)
+                          val fresh = imageProxyToJpeg(image, 72)
                           if (fresh != null) {
                               lastFrameConvertMs = nowMs
                               jpegBytes = fresh
                               latestFullJpeg.set(fresh)
                               synchronized(ringBufferLock) {
-                                  if (rollingFrames.size >= 40) rollingFrames.removeFirst()
+                                  if (rollingFrames.size >= 36) rollingFrames.removeFirst()
                                   rollingFrames.addLast(fresh)
                               }
                           }
@@ -1742,7 +1762,7 @@ jobs:
                           if (nowMs - lastTamperMs > 30_000L && isWithinSchedule(cfg)) {
                               lastTamperMs = nowMs
                               addEvent("🕶 Kamera obyektivi yopildi yoki qorong‘ilashdi!")
-                              val snap = imageProxyToJpeg(image, 78) ?: jpegBytes
+                              val snap = imageProxyToJpeg(image, 75) ?: jpegBytes
                               if (snap != null) {
                                   sendPhotoWithFallback(cfg, snap, "🚨 BUZG‘UNCHILIK!\nKamera obyektivi to‘sib qo‘yildi!")
                               }
@@ -1773,10 +1793,12 @@ jobs:
                           val last = lastAlertMsMap["phone"] ?: 0L
                           if (nowMs - last >= cool * 1000L) {
                               lastAlertMsMap["phone"] = nowMs
-                              val alertJpeg = imageProxyToJpeg(image, 80) ?: jpegBytes
+                              val alertJpeg = imageProxyToJpeg(image, 78) ?: jpegBytes
                               if (alertJpeg != null) {
                                   latestFullJpeg.set(alertJpeg)
-                                  handleMotionWithAiAndZoom(cfg, "Telefon kamerasi", alertJpeg, ratio, isPhone = true)
+                                  networkExecutor.execute {
+                                      handleMotionWithAiAndZoom(cfg, "Telefon kamerasi", alertJpeg, ratio, isPhone = true)
+                                  }
                               }
                           }
                       }
@@ -1909,7 +1931,7 @@ jobs:
                       canvas.drawText("ZOOM: $label", 14f, textPaint.textSize + 10f, textPaint)
 
                       val out = ByteArrayOutputStream()
-                      cropped.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                      cropped.compress(Bitmap.CompressFormat.JPEG, 82, out)
                       out.toByteArray()
                   } catch (_: Exception) {
                       null
@@ -1922,11 +1944,11 @@ jobs:
                       try {
                           val collected = mutableListOf<ByteArray>()
                           synchronized(ringBufferLock) {
-                              collected.addAll(rollingFrames.toList().takeLast(16))
+                              collected.addAll(rollingFrames.toList().takeLast(14))
                           }
                           val startMs = System.currentTimeMillis()
-                          while (System.currentTimeMillis() - startMs < 6500L && collected.size < 40 && isRunning) {
-                              Thread.sleep(250L)
+                          while (System.currentTimeMillis() - startMs < 6000L && collected.size < 36 && isRunning) {
+                              Thread.sleep(300L)
                               latestFullJpeg.get()?.let { f ->
                                   if (collected.isEmpty() || collected.last() !== f) {
                                       collected.add(f)
@@ -2023,7 +2045,7 @@ jobs:
                               latestIpPreviewJpeg.set(bytes)
 
                               val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@execute
-                              val currGray = bitmapToGray64x48(bmp)
+                              val currGray = bitmapToGray48x36(bmp)
                               val prev = prevIpGrayMap.put(key, currGray)
                               if (prev == null || !isWithinSchedule(cfg)) return@execute
 
@@ -2381,9 +2403,9 @@ jobs:
                   return nv21
               }
 
-              private fun bitmapToGray64x48(bmp: Bitmap): ByteArray {
-                  val gw = 64
-                  val gh = 48
+              private fun bitmapToGray48x36(bmp: Bitmap): ByteArray {
+                  val gw = 48
+                  val gh = 36
                   val scaled = Bitmap.createScaledBitmap(bmp, gw, gh, false)
                   val out = ByteArray(gw * gh)
                   var idx = 0
@@ -2495,7 +2517,6 @@ jobs:
           import android.os.Bundle
           import android.os.PowerManager
           import android.provider.Settings
-          import android.util.Base64
           import android.view.Gravity
           import android.view.View
           import android.webkit.JavascriptInterface
@@ -2536,11 +2557,11 @@ jobs:
                   super.onCreate(savedInstanceState)
 
                   val root = FrameLayout(this).apply {
-                      setBackgroundColor(Color.parseColor("#050814"))
+                      setBackgroundColor(Color.parseColor("#030712"))
                   }
 
                   previewView = PreviewView(this).apply {
-                      implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+                      implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                       scaleType = PreviewView.ScaleType.FILL_CENTER
                       visibility = View.GONE
                   }
@@ -2633,12 +2654,13 @@ jobs:
 
                   @JavascriptInterface
                   fun getClientProfile(): String {
+                      val hasTok = RemoteControlClient.getActiveToken(activity).isNotEmpty()
                       return JSONObject().apply {
                           put("id", SecureStore.getDeviceId(activity))
                           put("name", SecureStore.getClientName(activity))
                           put("phone", SecureStore.getClientPhone(activity))
                           put("expiresAt", SecureStore.getRemoteExpires(activity))
-                          put("customToken", SecureStore.getCustomToken(activity))
+                          put("tokenLocked", hasTok)
                       }.toString()
                   }
 
@@ -2662,7 +2684,7 @@ jobs:
                           val escExp = st.expiresAt.replace("\\", "\\\\").replace("'", "\\'")
                           val escSync = st.syncStatus.replace("\\", "\\\\").replace("'", "\\'")
                           activity.runOnUiThread {
-                              webView.evaluateJavascript("window.onRemoteControlUpdated(${st.active}, '$escMsg', '$escExp', '$escSync');", null)
+                              webView.evaluateJavascript("window.onRemoteControlUpdated(${st.active}, '$escMsg', '$escExp', '$escSync', ${st.tokenConfigured});", null)
                           }
                       }.start()
                   }
@@ -2927,104 +2949,176 @@ jobs:
           <head>
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-            <title>Qo‘riqlash Pro</title>
+            <title>Qo‘riqlash Cyber-Pro</title>
             <style>
+              :root {
+                --bg: #030712;
+                --card: rgba(15, 23, 42, 0.78);
+                --border: rgba(56, 189, 248, 0.22);
+                --cyan: #00f0ff;
+                --emerald: #10b981;
+                --rose: #f43f5e;
+                --text: #f1f5f9;
+                --muted: #94a3b8;
+              }
               * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
               body {
-                margin: 0; font-family: system-ui, -apple-system, sans-serif;
-                background: #050814; color: #e2e8f0; padding-bottom: 40px;
+                margin: 0; font-family: 'Inter', system-ui, -apple-system, sans-serif;
+                background: radial-gradient(circle at top right, #0c1938 0%, #030712 55%);
+                color: var(--text); padding-bottom: 48px; min-height: 100vh;
               }
               .header {
                 display: flex; align-items: center; justify-content: space-between;
-                padding: 14px 16px; background: #0b1120; border-bottom: 1px solid #1e293b;
-                position: sticky; top: 0; z-index: 20;
+                padding: 16px; background: rgba(3, 7, 18, 0.88);
+                backdrop-filter: blur(14px);
+                border-bottom: 1px solid var(--border);
+                position: sticky; top: 0; z-index: 25;
               }
-              .brand { font-weight: 800; font-size: 17px; color: #00e5ff; letter-spacing: .5px; }
-              .sub-brand { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+              .brand-wrap { display: flex; align-items: center; gap: 10px; }
+              .pulse-dot {
+                width: 11px; height: 11px; border-radius: 50%;
+                background: #64748b; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+              }
+              .pulse-dot.active {
+                background: var(--emerald);
+                animation: pulseRing 1.8s infinite;
+              }
+              @keyframes pulseRing {
+                0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.75); }
+                70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+              }
+              .brand {
+                font-weight: 900; font-size: 17px; letter-spacing: 1px;
+                background: linear-gradient(90deg, #00f0ff, #38bdf8, #818cf8);
+                -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+              }
+              .sub-brand { font-size: 11px; color: var(--muted); margin-top: 2px; }
               .icon-btn {
-                background: #1e293b; color: #fff; border: 1px solid #334155;
-                border-radius: 10px; padding: 8px 12px; font-size: 13px; font-weight: 600;
+                background: rgba(30, 41, 59, 0.85); color: #fff;
+                border: 1px solid rgba(56, 189, 248, 0.35);
+                border-radius: 12px; padding: 9px 14px; font-size: 13px; font-weight: 700;
+                box-shadow: 0 4px 14px rgba(0, 240, 255, 0.12);
               }
               .card {
-                background: #0f172a; border: 1px solid #1e293b; border-radius: 16px;
-                margin: 12px; padding: 14px;
+                background: var(--card); backdrop-filter: blur(12px);
+                border: 1px solid var(--border); border-radius: 20px;
+                margin: 14px; padding: 16px;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
               }
               .card-title {
-                font-size: 13px; font-weight: 700; color: #38bdf8;
-                text-transform: uppercase; letter-spacing: .6px; margin-bottom: 10px;
+                font-size: 12px; font-weight: 800; color: var(--cyan);
+                text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;
                 display: flex; justify-content: space-between; align-items: center;
               }
+              .preview-shell {
+                position: relative; width: 100%; height: 210px; border-radius: 16px;
+                background: #020617; border: 1px solid rgba(0, 240, 255, 0.3);
+                overflow: hidden; box-shadow: inset 0 0 24px rgba(0, 240, 255, 0.12);
+              }
               .preview-box {
-                width: 100%; height: 190px; background: #020617; border-radius: 12px;
-                border: 1px dashed #334155; display: flex; align-items: center;
-                justify-content: center; color: #64748b; font-size: 13px; overflow: hidden;
+                width: 100%; height: 100%; display: flex; flex-direction: column;
+                align-items: center; justify-content: center; color: #64748b; font-size: 13px;
               }
-              .grid-wrap {
-                display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+              .hud-corner {
+                position: absolute; width: 18px; height: 18px; border-color: var(--cyan);
+                border-style: solid; pointer-events: none; z-index: 5;
               }
+              .tl { top: 8px; left: 8px; border-width: 2px 0 0 2px; border-radius: 4px 0 0 0; }
+              .tr { top: 8px; right: 8px; border-width: 2px 2px 0 0; border-radius: 0 4px 0 0; }
+              .bl { bottom: 8px; left: 8px; border-width: 0 0 2px 2px; border-radius: 0 0 0 4px; }
+              .br { bottom: 8px; right: 8px; border-width: 0 2px 2px 0; border-radius: 0 0 4px 0; }
+              .grid-wrap { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
               .grid-item {
-                background: #020617; border: 1px solid #1e293b; border-radius: 10px;
-                overflow: hidden; position: relative; min-height: 110px;
+                background: #020617; border: 1px solid #1e293b; border-radius: 14px;
+                overflow: hidden; position: relative; min-height: 115px;
               }
-              .grid-item img { width: 100%; height: 110px; object-fit: cover; display: block; }
+              .grid-item img { width: 100%; height: 115px; object-fit: cover; display: block; }
               .grid-label {
                 position: absolute; bottom: 0; left: 0; right: 0;
-                background: rgba(2,6,23,.78); color: #f8fafc; font-size: 11px;
-                padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                background: linear-gradient(transparent, rgba(2,6,23,.92));
+                color: #f8fafc; font-size: 11px; font-weight: 600;
+                padding: 8px 8px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
               }
-              .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+              .row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
               .btn {
-                flex: 1; padding: 12px; border-radius: 12px; border: none;
-                font-weight: 700; font-size: 14px; cursor: pointer; text-align: center;
+                flex: 1; padding: 13px; border-radius: 14px; border: none;
+                font-weight: 800; font-size: 14px; letter-spacing: .4px; cursor: pointer;
+                text-align: center; transition: transform 0.1s;
               }
-              .btn-start { background: #16a34a; color: #fff; }
-              .btn-stop { background: #dc2626; color: #fff; }
-              .btn-sec { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
-              .btn-accent { background: #0284c7; color: #fff; }
-              label { display: block; font-size: 12px; color: #94a3b8; margin: 10px 0 4px; }
+              .btn:active { transform: scale(0.97); }
+              .btn-start {
+                background: linear-gradient(135deg, #10b981, #059669); color: #fff;
+                box-shadow: 0 6px 20px rgba(16, 185, 129, 0.35);
+              }
+              .btn-stop {
+                background: linear-gradient(135deg, #f43f5e, #be123c); color: #fff;
+                box-shadow: 0 6px 20px rgba(244, 63, 94, 0.3);
+              }
+              .btn-sec {
+                background: rgba(30, 41, 59, 0.9); color: #e2e8f0;
+                border: 1px solid rgba(148, 163, 184, 0.25);
+              }
+              .btn-accent {
+                background: linear-gradient(135deg, #0284c7, #0369a1); color: #fff;
+                box-shadow: 0 4px 16px rgba(2, 132, 199, 0.35);
+              }
+              label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 5px; font-weight: 600; }
               input, select {
-                width: 100%; padding: 10px 12px; border-radius: 10px;
-                border: 1px solid #334155; background: #020617; color: #f8fafc; font-size: 14px;
+                width: 100%; padding: 11px 13px; border-radius: 12px;
+                border: 1px solid #334155; background: rgba(2, 6, 23, 0.9);
+                color: #f8fafc; font-size: 14px; outline: none;
               }
+              input:focus, select:focus { border-color: var(--cyan); }
               .dev-card {
-                background: #020617; border: 1px solid #1e293b; border-radius: 12px;
-                padding: 10px; margin-top: 8px;
+                background: rgba(2, 6, 23, 0.85); border: 1px solid #1e293b;
+                border-radius: 14px; padding: 12px; margin-top: 10px;
               }
               .dev-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 14px; }
               .chk-row {
                 display: flex; align-items: center; justify-content: space-between;
-                padding: 8px 0; border-bottom: 1px solid #1e293b; font-size: 13px;
+                padding: 10px 0; border-bottom: 1px solid rgba(30, 41, 59, 0.8); font-size: 13px;
               }
-              .chk-row input[type="checkbox"] { width: 20px; height: 20px; }
-              .stat-bar {
-                display: flex; justify-content: space-around; background: #020617;
-                padding: 10px; border-radius: 10px; margin-top: 8px; font-size: 12px;
+              .chk-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--cyan); }
+              .stat-grid {
+                display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px;
               }
+              .stat-tile {
+                background: rgba(2, 6, 23, 0.85); border: 1px solid rgba(56, 189, 248, 0.18);
+                border-radius: 12px; padding: 10px 6px; text-align: center;
+              }
+              .stat-val { font-size: 18px; font-weight: 900; color: var(--cyan); }
+              .stat-lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
               .log-item {
-                font-size: 12px; padding: 6px 0; border-bottom: 1px solid #1e293b; color: #cbd5e1;
+                font-size: 12px; padding: 8px 0; border-bottom: 1px solid rgba(30, 41, 59, 0.7); color: #cbd5e1;
+              }
+              .locked-box {
+                background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4);
+                border-radius: 12px; padding: 12px; font-size: 13px; color: #34d399;
+                display: flex; justify-content: space-between; align-items: center; margin-top: 6px;
               }
               .overlay {
-                position: fixed; inset: 0; background: rgba(2,6,23,.97); z-index: 99;
+                position: fixed; inset: 0; background: rgba(3, 7, 18, 0.98); z-index: 99;
                 display: none; flex-direction: column; align-items: center; justify-content: center;
                 padding: 24px; text-align: center;
               }
               .overlay.show { display: flex; }
-              .overlay h2 { color: #00e5ff; margin-bottom: 8px; }
-              .overlay p { color: #94a3b8; font-size: 14px; max-width: 340px; }
+              .overlay h2 { color: var(--cyan); margin-bottom: 8px; }
+              .overlay p { color: var(--muted); font-size: 14px; max-width: 340px; }
               .overlay input { max-width: 300px; margin: 10px 0; text-align: center; }
               .modal-zoom {
-                position: fixed; inset: 0; background: rgba(0,0,0,.92); z-index: 80;
+                position: fixed; inset: 0; background: rgba(0,0,0,.94); z-index: 80;
                 display: none; flex-direction: column; align-items: center; justify-content: center; padding: 16px;
               }
               .modal-zoom.show { display: flex; }
-              .modal-zoom img { max-width: 100%; max-height: 80vh; border-radius: 12px; }
+              .modal-zoom img { max-width: 100%; max-height: 80vh; border-radius: 14px; border: 1px solid var(--cyan); }
             </style>
           </head>
           <body>
 
             <!-- 1. OBUNA BLOK EKRANI -->
             <div id="blockOverlay" class="overlay">
-              <h2 style="color:#f87171;">⛔ OBUNA TO‘XTATILGAN</h2>
+              <h2 style="color:#f43f5e;">⛔ OBUNA TO‘XTATILGAN</h2>
               <p id="blockReason">Obuna muddatingiz tugagan yoki faolsizlantirilgan.</p>
               <p id="blockDevId" style="font-size:12px;color:#38bdf8;margin-top:8px;"></p>
               <button class="btn btn-accent" style="max-width:260px;margin-top:16px;" onclick="recheckSub()">🔄 Holatni qayta tekshirish</button>
@@ -3063,27 +3157,50 @@ jobs:
             </div>
 
             <div class="header">
-              <div>
-                <div class="brand">🛡 QO‘RIQLASH PRO</div>
-                <div class="sub-brand" id="subHeaderInfo">Yuklanmoqda...</div>
-                <div class="sub-brand" id="serverSyncBadge" style="color:#38bdf8;"></div>
+              <div class="brand-wrap">
+                <div id="liveDot" class="pulse-dot"></div>
+                <div>
+                  <div class="brand">QO‘RIQLASH AI</div>
+                  <div class="sub-brand" id="subHeaderInfo">Yuklanmoqda...</div>
+                  <div class="sub-brand" id="serverSyncBadge" style="color:#38bdf8;"></div>
+                </div>
               </div>
-              <button class="icon-btn" onclick="toggleSettings()">⚙️ Sozlamalar</button>
+              <button class="icon-btn" onclick="toggleSettings()">⚙️ Sozlash</button>
             </div>
 
             <!-- ASOSIY MONITOR EKRANI -->
             <div id="mainView">
               <div class="card">
                 <div class="card-title">
-                  <span>📱 Telefon kamerasi</span>
-                  <span id="statusBadge" style="color:#94a3b8;">Tayyor</span>
+                  <span>📡 Jonli Optik Nazorat</span>
+                  <span id="statusBadge" style="color:#94a3b8;">KUTISHDA</span>
                 </div>
-                <div id="previewAnchor" class="preview-box">Telefon kamerasi ko‘rinishi shu yerda chiqadi</div>
-                <div class="stat-bar">
-                  <span>📥 Kirish: <b id="cntIn">0</b></span>
-                  <span>📤 Chiqish: <b id="cntOut">0</b></span>
-                  <span>📦 Navbat: <b id="cntQueue">0</b></span>
+                <div class="preview-shell">
+                  <div class="hud-corner tl"></div>
+                  <div class="hud-corner tr"></div>
+                  <div class="hud-corner bl"></div>
+                  <div class="hud-corner br"></div>
+                  <div id="previewAnchor" class="preview-box">
+                    <span style="font-size:28px;margin-bottom:6px;">🛡</span>
+                    <span>Nazoratni yoqish uchun BOSHLASH tugmasini bosing</span>
+                  </div>
                 </div>
+
+                <div class="stat-grid">
+                  <div class="stat-tile">
+                    <div class="stat-val" id="cntIn">0</div>
+                    <div class="stat-lbl">📥 Kirish</div>
+                  </div>
+                  <div class="stat-tile">
+                    <div class="stat-val" id="cntOut">0</div>
+                    <div class="stat-lbl">📤 Chiqish</div>
+                  </div>
+                  <div class="stat-tile">
+                    <div class="stat-val" id="cntQueue">0</div>
+                    <div class="stat-lbl">📦 Oflayn</div>
+                  </div>
+                </div>
+
                 <div class="row">
                   <button class="btn btn-start" onclick="startGuard()">▶ BOSHLASH</button>
                   <button class="btn btn-stop" onclick="stopGuard()">⏹ TO‘XTATISH</button>
@@ -3097,7 +3214,7 @@ jobs:
               <!-- IP KAMERALAR PARALLEL KATAGI -->
               <div class="card">
                 <div class="card-title">
-                  <span>📹 Ulangan IP Kameralar / NVR</span>
+                  <span>📹 IP Kameralar / NVR Tarmog‘i</span>
                   <span id="ipCountLabel">0 kanal</span>
                 </div>
                 <div id="ipGrid" class="grid-wrap"></div>
@@ -3106,8 +3223,8 @@ jobs:
               <!-- VOQEALAR JURNALI -->
               <div class="card">
                 <div class="card-title">
-                  <span>📋 Voqealar jurnali</span>
-                  <span style="color:#f87171;font-size:11px;" onclick="Android.clearNativeEvents()">Tozalash</span>
+                  <span>📋 Xavfsizlik Jurnali</span>
+                  <span style="color:#f43f5e;font-size:11px;cursor:pointer;" onclick="Android.clearNativeEvents()">Tozalash</span>
                 </div>
                 <div id="eventsBox"></div>
               </div>
@@ -3144,7 +3261,7 @@ jobs:
               <div class="card">
                 <div class="card-title">
                   <span>2. IP Kameralar va NVR lar</span>
-                  <button class="btn-accent" style="border:none;border-radius:8px;padding:6px 10px;font-size:12px;" onclick="addDevicePrompt()">➕ Yangi kamera / NVR</button>
+                  <button class="btn-accent" style="border:none;border-radius:10px;padding:7px 11px;font-size:12px;font-weight:700;" onclick="addDevicePrompt()">➕ Yangi kamera</button>
                 </div>
                 <div id="devicesList"></div>
               </div>
@@ -3190,11 +3307,17 @@ jobs:
 
               <!-- ADMIN SERVER VA PIN -->
               <div class="card">
-                <div class="card-title"><span>6. Admin Server Tokeni va PIN</span></div>
-                <label>Admin Server Token (ixtiyoriy, zaxira ulanish):</label>
-                <div class="row" style="margin-top:4px;">
-                  <input id="customTokenInput" style="flex:2;" placeholder="ghp_..." />
-                  <button class="btn btn-accent" style="flex:1;padding:10px;" onclick="saveServerToken()">Ulash</button>
+                <div class="card-title"><span>6. Server Tokeni va PIN</span></div>
+                <div id="tokenLockedView" class="locked-box" style="display:none;">
+                  <span>🔒 Server tokeni shifrlangan va saqlangan</span>
+                  <button style="background:#1e293b;color:#38bdf8;border:1px solid #38bdf8;border-radius:8px;padding:5px 9px;font-size:11px;" onclick="unlockTokenEdit()">Almashtirish</button>
+                </div>
+                <div id="tokenEditView">
+                  <label>Admin Server Token (bir marta kiritiladi):</label>
+                  <div class="row" style="margin-top:4px;">
+                    <input id="customTokenInput" type="password" style="flex:2;" placeholder="ghp_..." />
+                    <button class="btn btn-accent" style="flex:1;padding:10px;" onclick="saveServerToken()">Saqlash</button>
+                  </div>
                 </div>
                 <div class="row">
                   <input id="newPinInput" type="password" inputmode="numeric" style="flex:2;" placeholder="Yangi PIN (4+ raqam)" />
@@ -3205,7 +3328,7 @@ jobs:
                 </div>
               </div>
 
-              <div class="row" style="padding:0 12px;">
+              <div class="row" style="padding:0 14px;">
                 <button class="btn btn-start" onclick="saveAndCloseSettings()">💾 SAQLASH VA YOPISH</button>
               </div>
             </div>
@@ -3217,15 +3340,23 @@ jobs:
             let lastEventsRaw = "";
             let lastGridRaw = "";
 
+            function setTokenUiLocked(locked) {
+              document.getElementById('tokenLockedView').style.display = locked ? 'flex' : 'none';
+              document.getElementById('tokenEditView').style.display = locked ? 'none' : 'block';
+            }
+
+            function unlockTokenEdit() {
+              setTokenUiLocked(false);
+            }
+
             function initApp() {
               const devId = Android.getDeviceId();
               document.getElementById('regDevId').innerText = "Qurilma ID: " + devId;
               document.getElementById('blockDevId').innerText = "Sizning ID: " + devId;
 
               const prof = JSON.parse(Android.getClientProfile() || "{}");
-              if (prof.customToken) {
-                document.getElementById('customTokenInput').value = prof.customToken;
-              }
+              setTokenUiLocked(!!prof.tokenLocked);
+
               if (!prof.name) {
                 document.getElementById('registerOverlay').classList.add('show');
               } else {
@@ -3239,7 +3370,7 @@ jobs:
 
               loadCfgToUi();
               refreshFaces();
-              setInterval(syncUiLoop, 2500);
+              setInterval(syncUiLoop, 2200);
             }
 
             function updateHeaderSub(prof) {
@@ -3259,8 +3390,10 @@ jobs:
 
             function saveServerToken() {
               const t = document.getElementById('customTokenInput').value.trim();
+              if (!t) return;
               Android.saveCustomServerToken(t);
-              alert("Token saqlandi va server tekshirilmoqda!");
+              document.getElementById('customTokenInput').value = '';
+              setTokenUiLocked(true);
             }
 
             function verifyCreator() {
@@ -3272,7 +3405,7 @@ jobs:
               }
             }
 
-            window.onRemoteControlUpdated = function(active, msg, exp, syncSt) {
+            window.onRemoteControlUpdated = function(active, msg, exp, syncSt, tokOk) {
               const ov = document.getElementById('blockOverlay');
               if (!active) {
                 document.getElementById('blockReason').innerText = msg || "Obuna muddatingiz tugagan.";
@@ -3283,6 +3416,7 @@ jobs:
               if (syncSt) {
                 document.getElementById('serverSyncBadge').innerText = syncSt;
               }
+              if (tokOk) setTokenUiLocked(true);
               const prof = JSON.parse(Android.getClientProfile() || "{}");
               if (exp) prof.expiresAt = exp;
               updateHeaderSub(prof);
@@ -3436,7 +3570,7 @@ jobs:
                 div.innerHTML = `
                   <div class="dev-head">
                     <span>#${i+1} ${d.name}</span>
-                    <button style="background:#dc2626;color:#fff;border:none;border-radius:6px;padding:4px 8px;" onclick="removeDevice(${i})">O‘chirish</button>
+                    <button style="background:#f43f5e;color:#fff;border:none;border-radius:8px;padding:5px 9px;font-size:11px;" onclick="removeDevice(${i})">O‘chirish</button>
                   </div>
                   <label>Nomi:</label>
                   <input value="${d.name}" onchange="devices[${i}].name=this.value" />
@@ -3502,7 +3636,7 @@ jobs:
               list.forEach(f => {
                 const row = document.createElement('div');
                 row.className = 'chk-row';
-                row.innerHTML = `<span>👤 ${f.name}</span><button style="background:#dc2626;color:#fff;border:none;border-radius:6px;padding:4px 8px;" onclick="Android.removeKnownFace('${f.id}');refreshFaces();">O‘chirish</button>`;
+                row.innerHTML = `<span>👤 ${f.name}</span><button style="background:#f43f5e;color:#fff;border:none;border-radius:8px;padding:4px 8px;" onclick="Android.removeKnownFace('${f.id}');refreshFaces();">O‘chirish</button>`;
                 box.appendChild(row);
               });
             }
@@ -3516,8 +3650,16 @@ jobs:
             function syncUiLoop() {
               const st = JSON.parse(Android.getBgState() || "{}");
               const badge = document.getElementById('statusBadge');
-              badge.innerText = st.running ? "🟢 ISHLAYAPTI" : "⚪ TO‘XTATILGAN";
-              badge.style.color = st.running ? "#4ade80" : "#94a3b8";
+              const dot = document.getElementById('liveDot');
+              if (st.running) {
+                badge.innerText = "● JONLI FAOL";
+                badge.style.color = "#10b981";
+                dot.classList.add('active');
+              } else {
+                badge.innerText = "KUTISHDA";
+                badge.style.color = "#94a3b8";
+                dot.classList.remove('active');
+              }
               document.getElementById('cntIn').innerText = st.enter || 0;
               document.getElementById('cntOut').innerText = st.exit || 0;
               document.getElementById('cntQueue').innerText = st.queueSize || 0;
@@ -3549,7 +3691,7 @@ jobs:
                     cell.innerHTML = `<img src="data:image/jpeg;base64,${item.b64}" /><div class="grid-label">🟢 ${item.title}</div>`;
                     cell.onclick = () => openZoom(item.b64, item.title);
                   } else {
-                    cell.innerHTML = `<div style="padding:36px 8px;text-align:center;font-size:11px;color:#64748b;">Ulanmoqda...</div><div class="grid-label">⚪ ${item.title}</div>`;
+                    cell.innerHTML = `<div style="padding:40px 8px;text-align:center;font-size:11px;color:#64748b;">Ulanmoqda...</div><div class="grid-label">⚪ ${item.title}</div>`;
                   }
                   grid.appendChild(cell);
                 });
@@ -3560,7 +3702,7 @@ jobs:
                 lastEventsRaw = evRaw;
                 const evs = JSON.parse(evRaw);
                 const eBox = document.getElementById('eventsBox');
-                eBox.innerHTML = evs.slice(0, 15).map(e => `<div class="log-item"><b>[${e.time}]</b> ${e.text}</div>`).join('');
+                eBox.innerHTML = evs.slice(0, 15).map(e => `<div class="log-item"><b style="color:#38bdf8;">[${e.time}]</b> ${e.text}</div>`).join('');
               }
             }
 
@@ -3570,6 +3712,9 @@ jobs:
           </html>
           EOF
 
+          # ==========================================
+          # 2-MODUL: ADMIN ILOVASI (:admin)
+          # ==========================================
           cat <<'EOF' > admin/build.gradle.kts
           plugins {
               id("com.android.application")
@@ -3584,8 +3729,8 @@ jobs:
                   applicationId = "uz.qoriqlash.admin"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 7
-                  versionName = "3.4-mukamal-admin"
+                  versionCode = 9
+                  versionName = "4.0-cyber-admin"
               }
 
               buildTypes {
@@ -3606,6 +3751,7 @@ jobs:
 
           dependencies {
               implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.security:security-crypto:1.1.0-alpha06")
               implementation("com.squareup.okhttp3:okhttp:4.12.0")
           }
           EOF
@@ -3624,7 +3770,7 @@ jobs:
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
               <application
-                  android:allowBackup="true"
+                  android:allowBackup="false"
                   android:label="Qo‘riqlash Admin"
                   android:theme="@android:style/Theme.Material.NoActionBar">
                   <activity
@@ -3644,13 +3790,16 @@ jobs:
 
           import android.app.Activity
           import android.app.AlertDialog
+          import android.content.Context
           import android.content.SharedPreferences
           import android.graphics.Color
           import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
           import android.os.Bundle
+          import android.text.InputType
           import android.util.Base64
           import android.view.Gravity
+          import android.view.View
           import android.widget.Button
           import android.widget.EditText
           import android.widget.LinearLayout
@@ -3658,6 +3807,8 @@ jobs:
           import android.widget.Switch
           import android.widget.TextView
           import android.widget.Toast
+          import androidx.security.crypto.EncryptedSharedPreferences
+          import androidx.security.crypto.MasterKey
           import okhttp3.MediaType.Companion.toMediaType
           import okhttp3.OkHttpClient
           import okhttp3.Request
@@ -3676,7 +3827,9 @@ jobs:
                   private const val EMBEDDED_ADMIN_TOKEN = "__GH_SECRET_PLACEHOLDER__"
               }
 
-              private lateinit var prefs: SharedPreferences
+              private lateinit var vaultPrefs: SharedPreferences
+              private lateinit var tokenInputBox: LinearLayout
+              private lateinit var tokenLockedBox: LinearLayout
               private lateinit var tokenInput: EditText
               private lateinit var statsText: TextView
               private lateinit var statusText: TextView
@@ -3690,22 +3843,49 @@ jobs:
                   .readTimeout(12, TimeUnit.SECONDS)
                   .build()
 
+              private fun getEncryptedPrefs(): SharedPreferences {
+                  return try {
+                      val masterKey = MasterKey.Builder(applicationContext)
+                          .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                          .build()
+                      EncryptedSharedPreferences.create(
+                          applicationContext,
+                          "qoriqlash_admin_vault_v4",
+                          masterKey,
+                          EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                          EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                      )
+                  } catch (_: Exception) {
+                      getSharedPreferences("QoriqlashAdminPrefs_fb", Context.MODE_PRIVATE)
+                  }
+              }
+
+              private fun getSavedToken(): String {
+                  val saved = vaultPrefs.getString("gh_token_enc", "") ?: ""
+                  if (saved.isNotEmpty()) return saved
+                  if (EMBEDDED_ADMIN_TOKEN.startsWith("ghp_") || EMBEDDED_ADMIN_TOKEN.startsWith("github_pat_")) {
+                      vaultPrefs.edit().putString("gh_token_enc", EMBEDDED_ADMIN_TOKEN).apply()
+                      return EMBEDDED_ADMIN_TOKEN
+                  }
+                  return ""
+              }
+
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-                  prefs = getSharedPreferences("QoriqlashAdminPrefs", MODE_PRIVATE)
+                  vaultPrefs = getEncryptedPrefs()
 
                   val scroll = ScrollView(this).apply {
-                      setBackgroundColor(Color.parseColor("#050814"))
+                      setBackgroundColor(Color.parseColor("#030712"))
                   }
                   val layout = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(40, 60, 40, 80)
+                      setPadding(40, 56, 40, 80)
                   }
                   scroll.addView(layout)
 
                   val title = TextView(this).apply {
-                      text = "🛡 QO‘RIQLASH ADMIN · OBUNALAR"
-                      setTextColor(Color.parseColor("#00E5FF"))
+                      text = "🛡 QO‘RIQLASH ADMIN · COMMAND"
+                      setTextColor(Color.parseColor("#00F0FF"))
                       textSize = 20f
                       setTypeface(null, Typeface.BOLD)
                       gravity = Gravity.CENTER
@@ -3715,32 +3895,100 @@ jobs:
                   statusText = TextView(this).apply {
                       text = "Holat: Yuklanmoqda..."
                       setTextColor(Color.parseColor("#94A3B8"))
-                      setPadding(0, 14, 0, 14)
+                      setPadding(0, 12, 0, 14)
                       gravity = Gravity.CENTER
                   }
                   layout.addView(statusText)
 
+                  val statsBg = GradientDrawable().apply {
+                      setColor(Color.parseColor("#0F172A"))
+                      cornerRadius = 24f
+                      setStroke(2, Color.parseColor("#1E293B"))
+                  }
                   statsText = TextView(this).apply {
-                      text = "Jami kirgan: 0 ta  |  Faol obuna: 0 ta  |  Hozir ishlatyapti: 0 ta"
-                      setTextColor(Color.parseColor("#4ADE80"))
+                      text = "Jami: 0 ta  |  Faol: 0 ta  |  Onlayn: 0 ta"
+                      setTextColor(Color.parseColor("#10B981"))
                       textSize = 14f
                       setTypeface(null, Typeface.BOLD)
                       gravity = Gravity.CENTER
-                      setBackgroundColor(Color.parseColor("#0F172A"))
+                      background = statsBg
                       setPadding(24, 24, 24, 24)
                   }
                   layout.addView(statsText)
 
-                  val savedTok = prefs.getString("gh_token", "") ?: ""
-                  val defaultTok = if (savedTok.isNotEmpty()) savedTok
-                  else if (EMBEDDED_ADMIN_TOKEN.startsWith("ghp_") || EMBEDDED_ADMIN_TOKEN.startsWith("github_pat_")) EMBEDDED_ADMIN_TOKEN
-                  else ""
-
-                  layout.addView(makeLabel("GitHub Token (ghp_...):"))
-                  tokenInput = makeInput("ghp_xxxxxxxxxxxxxxxxxxxx").apply {
-                      setText(defaultTok)
+                  // Shifrlangan token ko'rinishi (bir marta yozilgandan keyin yopiladi)
+                  val lockBg = GradientDrawable().apply {
+                      setColor(Color.parseColor("#064E3B"))
+                      cornerRadius = 20f
+                      setStroke(2, Color.parseColor("#10B981"))
                   }
-                  layout.addView(tokenInput)
+                  tokenLockedBox = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      background = lockBg
+                      setPadding(24, 18, 24, 18)
+                      gravity = Gravity.CENTER_VERTICAL
+                      val lp = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      )
+                      lp.setMargins(0, 20, 0, 0)
+                      layoutParams = lp
+
+                      val lockLabel = TextView(this@AdminActivity).apply {
+                          text = "🔒 Token AES-256 bilan shifrlangan"
+                          setTextColor(Color.parseColor("#6EE7B7"))
+                          textSize = 13f
+                          setTypeface(null, Typeface.BOLD)
+                          layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                      }
+                      addView(lockLabel)
+
+                      val changeBtn = Button(this@AdminActivity).apply {
+                          text = "Almashtirish"
+                          textSize = 11f
+                          setBackgroundColor(Color.parseColor("#0F172A"))
+                          setTextColor(Color.parseColor("#38BDF8"))
+                          setOnClickListener {
+                              tokenLockedBox.visibility = View.GONE
+                              tokenInputBox.visibility = View.VISIBLE
+                          }
+                      }
+                      addView(changeBtn)
+                  }
+                  layout.addView(tokenLockedBox)
+
+                  // Birinchi marta token kiritish oynasi
+                  tokenInputBox = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                  }
+                  tokenInputBox.addView(makeLabel("GitHub Token (bir marta kiritiladi va shifrlanadi):"))
+                  tokenInput = makeInput("ghp_xxxxxxxxxxxxxxxxxxxx").apply {
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                  }
+                  tokenInputBox.addView(tokenInput)
+
+                  val saveTokBtn = Button(this).apply {
+                      text = "🔐 SHIFRLAB SAQLASH"
+                      setBackgroundColor(Color.parseColor("#10B981"))
+                      setTextColor(Color.WHITE)
+                      val lp = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      )
+                      lp.setMargins(0, 14, 0, 0)
+                      layoutParams = lp
+                      setOnClickListener {
+                          val t = tokenInput.text.toString().trim()
+                          if (t.isNotEmpty()) {
+                              vaultPrefs.edit().putString("gh_token_enc", t).apply()
+                              tokenInput.setText("")
+                              updateTokenVisibility()
+                              fetchUsers()
+                          }
+                      }
+                  }
+                  tokenInputBox.addView(saveTokBtn)
+                  layout.addView(tokenInputBox)
 
                   val refreshBtn = Button(this).apply {
                       text = "🔄 MIJOZLAR RO‘YXATINI YANGILASH"
@@ -3750,22 +3998,18 @@ jobs:
                           LinearLayout.LayoutParams.MATCH_PARENT,
                           LinearLayout.LayoutParams.WRAP_CONTENT
                       )
-                      lp.setMargins(0, 24, 0, 28)
+                      lp.setMargins(0, 22, 0, 24)
                       layoutParams = lp
-                      setOnClickListener {
-                          val t = tokenInput.text.toString().trim()
-                          if (t.isNotEmpty()) prefs.edit().putString("gh_token", t).apply()
-                          fetchUsers()
-                      }
+                      setOnClickListener { fetchUsers() }
                   }
                   layout.addView(refreshBtn)
 
                   val listHeader = TextView(this).apply {
                       text = "📋 RO‘YXATDAN O‘TGAN MIJOZLAR:"
-                      setTextColor(Color.parseColor("#00E5FF"))
+                      setTextColor(Color.parseColor("#00F0FF"))
                       textSize = 14f
                       setTypeface(null, Typeface.BOLD)
-                      setPadding(0, 8, 0, 16)
+                      setPadding(0, 6, 0, 16)
                   }
                   layout.addView(listHeader)
 
@@ -3775,7 +4019,14 @@ jobs:
                   layout.addView(usersContainer)
 
                   setContentView(scroll)
+                  updateTokenVisibility()
                   fetchUsers()
+              }
+
+              private fun updateTokenVisibility() {
+                  val hasToken = getSavedToken().isNotEmpty()
+                  tokenLockedBox.visibility = if (hasToken) View.VISIBLE else View.GONE
+                  tokenInputBox.visibility = if (hasToken) View.GONE else View.VISIBLE
               }
 
               private fun makeLabel(t: String): TextView = TextView(this).apply {
@@ -3793,9 +4044,9 @@ jobs:
               }
 
               private fun fetchUsers() {
-                  val tok = tokenInput.text.toString().trim()
+                  val tok = getSavedToken()
                   if (tok.isEmpty()) {
-                      statusText.text = "Avval GitHub Token (ghp_...) ni kiriting"
+                      statusText.text = "Avval GitHub Token (ghp_...) ni bir marta kiriting"
                       return
                   }
                   statusText.text = "Mijozlar yuklanmoqda..."
@@ -3818,22 +4069,22 @@ jobs:
                                   usersArray = root.optJSONArray("users") ?: JSONArray()
 
                                   runOnUiThread {
-                                      statusText.text = "✅ Baza yangilandi"
-                                      statusText.setTextColor(Color.parseColor("#4ADE80"))
+                                      statusText.text = "✅ Baza yangilandi (Shifrlangan ulanish)"
+                                      statusText.setTextColor(Color.parseColor("#10B981"))
                                       renderUsersList()
                                   }
                               } else {
                                   val code = resp.code
                                   runOnUiThread {
                                       statusText.text = "❌ Xatolik ($code): Token yoki users.json faylini tekshiring"
-                                      statusText.setTextColor(Color.parseColor("#F87171"))
+                                      statusText.setTextColor(Color.parseColor("#F43F5E"))
                                   }
                               }
                           }
                       } catch (e: Exception) {
                           runOnUiThread {
                               statusText.text = "❌ Tarmoq xatosi: ${e.message}"
-                              statusText.setTextColor(Color.parseColor("#F87171"))
+                              statusText.setTextColor(Color.parseColor("#F43F5E"))
                           }
                       }
                   }.start()
@@ -3855,7 +4106,7 @@ jobs:
                       usersContainer.addView(buildUserCard(i, u))
                   }
 
-                  statsText.text = "Jami kirgan: $total ta  |  Faol obuna: $activeCount ta  |  Hozir ishlatyapti: $runningNowCount ta"
+                  statsText.text = "Jami: $total ta  |  Faol: $activeCount ta  |  Onlayn: $runningNowCount ta"
                   if (total == 0) {
                       val empty = TextView(this).apply {
                           text = "Hali birorta mijoz ilovaga kirmagan."
@@ -3879,8 +4130,8 @@ jobs:
 
                   val cardBg = GradientDrawable().apply {
                       setColor(Color.parseColor("#0F172A"))
-                      cornerRadius = 24f
-                      setStroke(3, if (isAct) Color.parseColor("#00E5FF") else Color.parseColor("#EF4444"))
+                      cornerRadius = 26f
+                      setStroke(3, if (isAct) Color.parseColor("#00F0FF") else Color.parseColor("#F43F5E"))
                   }
 
                   return LinearLayout(this).apply {
@@ -3918,7 +4169,7 @@ jobs:
 
                       val sw = Switch(this@AdminActivity).apply {
                           text = if (isAct) "✅ Obuna FAOL (Faqat shu mijoz uchun)" else "⛔ Obuna O‘CHIRILGAN (Bloklangan)"
-                          setTextColor(if (isAct) Color.parseColor("#4ADE80") else Color.parseColor("#F87171"))
+                          setTextColor(if (isAct) Color.parseColor("#10B981") else Color.parseColor("#F43F5E"))
                           textSize = 14f
                           isChecked = isAct
                           setOnCheckedChangeListener { _, checked ->
@@ -3940,7 +4191,7 @@ jobs:
 
                       val plus30Btn = Button(this@AdminActivity).apply {
                           text = "➕ +30 kun uzaytirish"
-                          setBackgroundColor(Color.parseColor("#16A34A"))
+                          setBackgroundColor(Color.parseColor("#10B981"))
                           setTextColor(Color.WHITE)
                           textSize = 12f
                           layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -4004,7 +4255,7 @@ jobs:
               }
 
               private fun saveUsersToGitHub(commitMsg: String) {
-                  val tok = tokenInput.text.toString().trim()
+                  val tok = getSavedToken()
                   if (tok.isEmpty()) return
                   statusText.text = "Saqlanmoqda..."
 
@@ -4030,7 +4281,7 @@ jobs:
                                   usersSha = res.optJSONObject("content")?.optString("sha", usersSha) ?: usersSha
                                   runOnUiThread {
                                       statusText.text = "✅ $commitMsg"
-                                      statusText.setTextColor(Color.parseColor("#4ADE80"))
+                                      statusText.setTextColor(Color.parseColor("#10B981"))
                                       renderUsersList()
                                   }
                               } else {
