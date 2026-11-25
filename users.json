@@ -32,9 +32,9 @@
       "registeredAt": "2026-11-25 23:40",
       "lastSeen": "2026-11-25 23:40",
       "monitoring": true,
-      "active": false,
+      "active": true,
       "expiresAt": "2026-12-25",
-      "note": "To‘lov muddati tugagani sababli obunangiz to‘xtatildi."
+      "note": ""
     }
   ]
 }
