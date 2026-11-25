@@ -6,8 +6,8 @@
       "phone": "91 011 06 09",
       "model": "Samsung SM-S918B",
       "registeredAt": "2026-11-25 22:04",
-      "lastSeen": "2026-11-25 22:04",
-      "monitoring": false,
+      "lastSeen": "2026-11-25 22:06",
+      "monitoring": true,
       "active": true,
       "expiresAt": "2026-12-25",
       "note": ""
