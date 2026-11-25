@@ -92,8 +92,8 @@ jobs:
                   applicationId = "uz.qoriqlash.app"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 17
-                  versionName = "4.1-zero-anr"
+                  versionCode = 19
+                  versionName = "4.3-audio-live-antitheft"
               }
 
               buildTypes {
@@ -124,6 +124,7 @@ jobs:
               implementation("androidx.camera:camera-core:1.3.4")
               implementation("androidx.camera:camera-camera2:1.3.4")
               implementation("androidx.camera:camera-lifecycle:1.3.4")
+              implementation("androidx.camera:camera-video:1.3.4")
               implementation("androidx.camera:camera-view:1.3.4")
               implementation("androidx.security:security-crypto:1.1.0-alpha06")
               implementation("androidx.biometric:biometric:1.1.0")
@@ -171,6 +172,7 @@ jobs:
                   android:allowBackup="false"
                   android:fullBackupContent="false"
                   android:hardwareAccelerated="true"
+                  android:largeHeap="true"
                   android:label="Qo‘riqlash"
                   android:usesCleartextTraffic="true"
                   android:theme="@android:style/Theme.Material.NoActionBar">
@@ -313,7 +315,6 @@ jobs:
               fun getClientName(ctx: Context): String = fastPrefs(ctx).getString("client_name", "") ?: ""
               fun getClientPhone(ctx: Context): String = fastPrefs(ctx).getString("client_phone", "") ?: ""
 
-              // GitHub Token AES-256-GCM Vault ichida bir marta shifrlab saqlanadi
               fun setCustomToken(ctx: Context, token: String) {
                   val clean = token.trim()
                   if (clean.isNotEmpty()) {
@@ -734,6 +735,8 @@ jobs:
           package uz.qoriqlash.app
 
           import android.util.Base64
+          import okhttp3.ConnectionPool
+          import okhttp3.Dispatcher
           import okhttp3.OkHttpClient
           import okhttp3.Request
           import java.security.MessageDigest
@@ -757,11 +760,19 @@ jobs:
                   })
                   val sslContext = SSLContext.getInstance("TLS")
                   sslContext.init(null, trustAll, SecureRandom())
+
+                  val dispatcher = Dispatcher().apply {
+                      maxRequests = 48
+                      maxRequestsPerHost = 12
+                  }
+
                   OkHttpClient.Builder()
+                      .dispatcher(dispatcher)
+                      .connectionPool(ConnectionPool(24, 30, TimeUnit.SECONDS))
                       .sslSocketFactory(sslContext.socketFactory, trustAll[0] as X509TrustManager)
                       .hostnameVerifier { _, _ -> true }
-                      .connectTimeout(5, TimeUnit.SECONDS)
-                      .readTimeout(8, TimeUnit.SECONDS)
+                      .connectTimeout(4, TimeUnit.SECONDS)
+                      .readTimeout(6, TimeUnit.SECONDS)
                       .build()
               }
 
@@ -769,7 +780,7 @@ jobs:
                   if (url.isBlank()) return null
                   val baseReq = Request.Builder()
                       .url(url.trim())
-                      .header("User-Agent", "QoriqlashGuard/4.1")
+                      .header("User-Agent", "QoriqlashGuard/4.3")
                       .header("Accept", "image/jpeg,image/*,*/*")
                       .build()
 
@@ -1119,12 +1130,12 @@ jobs:
                               val zcrRatio = zeroCrossings.toDouble() / read.toDouble()
                               val now = System.currentTimeMillis()
 
-                              if (rms > 6800 && now - lastTriggerMs > 18_000L) {
+                              if (rms > 8500 && now - lastTriggerMs > 25_000L) {
                                   lastTriggerMs = now
                                   val reason = when {
-                                      zcrRatio > 0.28 && peak > 24000 -> "💥 Shisha sinishi yoki keskin zarba tovushi!"
-                                      zcrRatio > 0.14 && rms > 8500 -> "😱 Baland qichqiriq yoki sirenaga o‘xshash tovush!"
-                                      else -> "🔊 Xonada juda baland shovqin aniqlandi!"
+                                      zcrRatio > 0.28 && peak > 25000 -> "💥 Shisha sinishi yoki qattiq buzish zarbasi!"
+                                      zcrRatio > 0.15 && rms > 10500 -> "😱 Baland qichqiriq yoki sirenaga o‘xshash tovush!"
+                                      else -> "🔊 Xonada shubhali baland shovqin aniqlandi!"
                                   }
                                   onAcousticAlert(reason, (rms / 320).toInt())
                               }
@@ -1300,7 +1311,7 @@ jobs:
           import java.io.File
 
           object OfflineQueue {
-              private const val MAX_ITEMS = 45
+              private const val MAX_ITEMS = 60
 
               private fun dir(ctx: Context): File {
                   val d = File(ctx.filesDir, "offline_alerts")
@@ -1318,7 +1329,7 @@ jobs:
                           File(folder, "${oldest.nameWithoutExtension}.json").delete()
                           oldest.delete()
                       }
-                      val stamp = System.currentTimeMillis().toString()
+                      val stamp = "${System.currentTimeMillis()}_${(100..999).random()}"
                       File(folder, "$stamp.jpg").writeBytes(jpegBytes)
                       val meta = JSONObject().apply {
                           put("caption", caption)
@@ -1353,6 +1364,8 @@ jobs:
           cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/MonitorForegroundService.kt
           package uz.qoriqlash.app
 
+          import android.Manifest
+          import android.annotation.SuppressLint
           import android.app.Notification
           import android.app.NotificationChannel
           import android.app.NotificationManager
@@ -1361,6 +1374,7 @@ jobs:
           import android.content.Context
           import android.content.Intent
           import android.content.IntentFilter
+          import android.content.pm.PackageManager
           import android.graphics.Bitmap
           import android.graphics.BitmapFactory
           import android.graphics.Canvas
@@ -1382,12 +1396,20 @@ jobs:
           import android.os.IBinder
           import android.os.Looper
           import android.os.PowerManager
+          import android.util.Base64
           import android.util.Size
           import androidx.camera.core.CameraSelector
           import androidx.camera.core.ImageAnalysis
           import androidx.camera.core.ImageProxy
           import androidx.camera.core.Preview
           import androidx.camera.lifecycle.ProcessCameraProvider
+          import androidx.camera.video.FileOutputOptions
+          import androidx.camera.video.Quality
+          import androidx.camera.video.QualitySelector
+          import androidx.camera.video.Recorder
+          import androidx.camera.video.Recording
+          import androidx.camera.video.VideoCapture
+          import androidx.camera.video.VideoRecordEvent
           import androidx.core.app.NotificationCompat
           import androidx.core.content.ContextCompat
           import androidx.lifecycle.Lifecycle
@@ -1447,6 +1469,7 @@ jobs:
                   val latestIpPreviewJpeg = AtomicReference<ByteArray?>(null)
 
                   val ipGridFrames = ConcurrentHashMap<String, ByteArray>()
+                  val ipGridThumbnails = ConcurrentHashMap<String, ByteArray>()
                   val ipGridMeta = ConcurrentHashMap<String, JSONObject>()
 
                   @Volatile private var activeInstance: MonitorForegroundService? = null
@@ -1460,17 +1483,25 @@ jobs:
                   fun buildGridSnapshotJson(): String {
                       if (ipGridMeta.isEmpty()) return "[]"
                       val arr = JSONArray()
-                      val sortedKeys = ipGridMeta.keys.toList().sorted()
+                      val sortedKeys = ipGridMeta.keys.toList().sortedWith(
+                          compareBy<String> { it.substringBefore("_ch_") }
+                              .thenBy { it.substringAfter("_ch_", "0").toIntOrNull() ?: 0 }
+                      )
                       for (key in sortedKeys) {
                           val meta = ipGridMeta[key] ?: continue
-                          val bytes = ipGridFrames[key]
+                          val thumbBytes = ipGridThumbnails[key] ?: ipGridFrames[key]
                           val item = JSONObject(meta.toString())
-                          item.put("b64", if (bytes != null && bytes.isNotEmpty()) {
-                              android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                          item.put("b64", if (thumbBytes != null && thumbBytes.isNotEmpty()) {
+                              Base64.encodeToString(thumbBytes, Base64.NO_WRAP)
                           } else "")
                           arr.put(item)
                       }
                       return arr.toString()
+                  }
+
+                  fun getSingleCameraFullBase64(key: String): String {
+                      val bytes = ipGridFrames[key] ?: ipGridThumbnails[key] ?: return ""
+                      return Base64.encodeToString(bytes, Base64.NO_WRAP)
                   }
               }
 
@@ -1479,12 +1510,14 @@ jobs:
 
               private val mainHandler = Handler(Looper.getMainLooper())
               private val cameraExecutor = Executors.newSingleThreadExecutor()
-              private val networkExecutor = Executors.newCachedThreadPool()
+              private val ipPollExecutor = Executors.newFixedThreadPool(8)
+              private val networkExecutor = Executors.newFixedThreadPool(4)
+              private val inFlightChannels = ConcurrentHashMap<String, Boolean>()
 
               private val httpClient = OkHttpClient.Builder()
                   .connectTimeout(7, TimeUnit.SECONDS)
                   .readTimeout(12, TimeUnit.SECONDS)
-                  .writeTimeout(15, TimeUnit.SECONDS)
+                  .writeTimeout(20, TimeUnit.SECONDS)
                   .build()
 
               private val objectDetector by lazy {
@@ -1497,9 +1530,18 @@ jobs:
 
               private var wakeLock: PowerManager.WakeLock? = null
               private var cameraProvider: ProcessCameraProvider? = null
+              private var videoCapture: VideoCapture<Recorder>? = null
+              @Volatile private var activeRecording: Recording? = null
+
               private var activeCameraLens = "back"
               private var prevPhoneGray: ByteArray? = null
+              private var prevPhoneMeanLuma: Int = -1
+              private var consecutivePhoneHits = 0
+
               private val prevIpGrayMap = ConcurrentHashMap<String, ByteArray>()
+              private val prevIpMeanLumaMap = ConcurrentHashMap<String, Int>()
+              private val consecutiveIpHitsMap = ConcurrentHashMap<String, Int>()
+
               private val lastAlertMsMap = ConcurrentHashMap<String, Long>()
               @Volatile private var lastFrameConvertMs = 0L
               @Volatile private var lastFrameAnalyzeMs = 0L
@@ -1534,9 +1576,14 @@ jobs:
                   override fun run() {
                       if (!isRunning) return
                       val cfg = SecureStore.loadConfig(this@MonitorForegroundService)
-                      val sec = cfg.optInt("ipSec", 3).coerceIn(1, 300)
-                      pollAllIpCameras(cfg)
-                      mainHandler.postDelayed(this, sec * 1000L)
+                      val baseSec = cfg.optInt("ipSec", 3).coerceIn(1, 300)
+                      val totalCh = pollAllIpCameras(cfg)
+                      val effectiveSec = when {
+                          totalCh >= 16 -> baseSec.coerceAtLeast(3)
+                          totalCh >= 10 -> baseSec.coerceAtLeast(2)
+                          else -> baseSec
+                      }
+                      mainHandler.postDelayed(this, effectiveSec * 1000L)
                   }
               }
 
@@ -1596,7 +1643,6 @@ jobs:
                   val action = intent?.action ?: ACTION_START
                   when (action) {
                       ACTION_START -> {
-                          // Android 12+ talabiga ko'ra eng birinchi qatorda startForeground chaqiriladi
                           startForeground(NOTIF_ID, buildNotification("Qo‘riqlash tizimi faol"))
                           if (!SecureStore.isRemoteActive(this)) {
                               stopForeground(STOP_FOREGROUND_REMOVE)
@@ -1605,6 +1651,9 @@ jobs:
                           }
                           manualStopped = false
                           isRunning = true
+                          prevPhoneGray = null
+                          prevPhoneMeanLuma = -1
+                          consecutivePhoneHits = 0
                           SecureStore.setWasRunning(this, true)
                           val cfg = SecureStore.loadConfig(this)
                           applyConfiguration(cfg)
@@ -1638,7 +1687,7 @@ jobs:
                       }
                       ACTION_VIDEO_NOW -> {
                           val cfg = SecureStore.loadConfig(this)
-                          triggerVideoClip(cfg, "🎥 Qo‘lda yozilgan 10 soniyali video")
+                          triggerAudioVideoClip(cfg, "🎥 Qo‘lda yozilgan 10 soniyali ovozli video")
                       }
                       ACTION_CLEAR_LOG -> {
                           synchronized(eventsList) {
@@ -1661,7 +1710,7 @@ jobs:
 
                   if (mode == "phone" || mode == "both") {
                       activeCameraLens = lens
-                      mainHandler.postDelayed({ if (isRunning) bindPhoneCamera() }, 180L)
+                      mainHandler.postDelayed({ if (isRunning) bindPhoneCamera() }, 150L)
                   } else {
                       unbindPhoneCamera()
                   }
@@ -1678,19 +1727,19 @@ jobs:
                   }
 
                   audioDetector?.stop()
-                  if (audioOn) {
+                  if (audioOn && !recordingClip.get()) {
                       audioDetector = DangerAudioDetector { reason, _ ->
-                          if (!isRunning) return@DangerAudioDetector
+                          if (!isRunning || recordingClip.get()) return@DangerAudioDetector
                           val c = SecureStore.loadConfig(this)
                           if (!isWithinSchedule(c)) return@DangerAudioDetector
-                          addEvent(reason)
+                          addEvent("🚨 O‘G‘IRLIK / TOVUSH XAVFI: $reason")
                           val frame = latestFullJpeg.get()
                           if (frame != null) {
-                              sendPhotoWithFallback(c, frame, "🚨 TOVUSH TREVOGASI!\n$reason")
+                              sendPhotoWithFallback(c, frame, "🚨 O‘G‘IRLIK / TOVUSH TREVOGASI!\n$reason")
                           } else {
-                              sendTelegramText(c, "🚨 TOVUSH TREVOGASI!\n$reason")
+                              sendTelegramText(c, "🚨 O‘G‘IRLIK / TOVUSH TREVOGASI!\n$reason")
                           }
-                          triggerVideoClip(c, reason)
+                          triggerAudioVideoClip(c, reason)
                       }.also { it.start() }
                   }
 
@@ -1706,6 +1755,8 @@ jobs:
                   mainHandler.removeCallbacks(ipPollRunnable)
                   mainHandler.removeCallbacks(botPollRunnable)
                   mainHandler.removeCallbacks(remoteSyncRunnable)
+                  try { activeRecording?.stop() } catch (_: Exception) {}
+                  activeRecording = null
                   audioDetector?.stop()
                   unbindPhoneCamera()
               }
@@ -1735,15 +1786,31 @@ jobs:
                               processPhoneFrame(image)
                           }
 
+                          val recorder = Recorder.Builder()
+                              .setQualitySelector(QualitySelector.from(Quality.SD))
+                              .build()
+                          val vidCap = VideoCapture.withOutput(recorder)
+                          videoCapture = vidCap
+
                           val sp = previewSurfaceProvider.get()
                           if (uiVisible.get() && sp != null) {
                               val preview = Preview.Builder()
                                   .setTargetResolution(Size(640, 480))
                                   .build()
                                   .also { it.setSurfaceProvider(sp) }
-                              provider.bindToLifecycle(this, selector, preview, analysis)
+                              try {
+                                  provider.bindToLifecycle(this, selector, preview, analysis, vidCap)
+                              } catch (_: Exception) {
+                                  videoCapture = null
+                                  provider.bindToLifecycle(this, selector, preview, analysis)
+                              }
                           } else {
-                              provider.bindToLifecycle(this, selector, analysis)
+                              try {
+                                  provider.bindToLifecycle(this, selector, analysis, vidCap)
+                              } catch (_: Exception) {
+                                  videoCapture = null
+                                  provider.bindToLifecycle(this, selector, analysis)
+                              }
                           }
                       } catch (e: Exception) {
                           addEvent("⚠️ Telefon kamerasi xatosi: ${e.message}")
@@ -1754,15 +1821,38 @@ jobs:
               private fun unbindPhoneCamera() {
                   try {
                       cameraProvider?.unbindAll()
+                      videoCapture = null
                   } catch (_: Exception) {
                   }
+              }
+
+              // Yorug'lik o'zgarishiga chidamli aqlli harakat filtri (soyalar va chiroq miltillashini o'tkazib yuboradi)
+              private fun computeIlluminationInvariantMotion(
+                  currGray: ByteArray,
+                  prevGray: ByteArray,
+                  currMean: Int,
+                  prevMean: Int,
+                  sens: Int
+              ): Double {
+                  val lumaShift = (currMean - prevMean).coerceIn(-60, 60)
+                  // Agar umumiy yorug'lik birdaniga keskin o'zgarsa (chiroq yoqildi/o'chdi), bu harakat emas
+                  if (abs(lumaShift) > 35) return 0.0
+
+                  val pixelThresh = (95 - sens).coerceIn(22, 75)
+                  var changed = 0
+                  for (i in currGray.indices) {
+                      val c = (currGray[i].toInt() and 0xFF) - lumaShift
+                      val p = prevGray[i].toInt() and 0xFF
+                      if (abs(c - p) > pixelThresh) changed++
+                  }
+                  return changed.toDouble() / currGray.size.toDouble()
               }
 
               private fun processPhoneFrame(image: ImageProxy) {
                   try {
                       if (!isRunning) return
                       val nowMs = System.currentTimeMillis()
-                      if (nowMs - lastFrameAnalyzeMs < 220L) return
+                      if (nowMs - lastFrameAnalyzeMs < 260L) return
                       lastFrameAnalyzeMs = nowMs
 
                       val cfg = SecureStore.loadConfig(this)
@@ -1793,10 +1883,10 @@ jobs:
                           }
                       }
 
-                      val needJpegNow = (nowMs - lastFrameConvertMs >= 500L) || recordingClip.get()
+                      val needJpegNow = (nowMs - lastFrameConvertMs >= 550L) || recordingClip.get()
                       var jpegBytes: ByteArray? = latestFullJpeg.get()
                       if (needJpegNow) {
-                          val fresh = imageProxyToJpeg(image, 70)
+                          val fresh = imageProxyToJpeg(image, 72)
                           if (fresh != null) {
                               lastFrameConvertMs = nowMs
                               jpegBytes = fresh
@@ -1808,47 +1898,53 @@ jobs:
                           }
                       }
 
-                      val avgBrightness = brightnessSum / (gridW * gridH)
-                      if (cfg.optBoolean("tamperAlert", true) && avgBrightness < 10) {
+                      val avgBrightness = (brightnessSum / (gridW * gridH)).toInt()
+                      if (cfg.optBoolean("tamperAlert", true) && avgBrightness < 8) {
                           if (nowMs - lastTamperMs > 30_000L && isWithinSchedule(cfg)) {
                               lastTamperMs = nowMs
-                              addEvent("🕶 Kamera obyektivi yopildi yoki qorong‘ilashdi!")
-                              val snap = imageProxyToJpeg(image, 75) ?: jpegBytes
+                              addEvent("🚨 O‘G‘IRLIK XAVFI: Kamera obyektivi to‘sib qo‘yildi!")
+                              val snap = imageProxyToJpeg(image, 78) ?: jpegBytes
                               if (snap != null) {
-                                  sendPhotoWithFallback(cfg, snap, "🚨 BUZG‘UNCHILIK!\nKamera obyektivi to‘sib qo‘yildi!")
+                                  sendPhotoWithFallback(cfg, snap, "🚨 O‘G‘IRLIK / BUZISH XAVFI!\nKamera obyektivi qo‘l yoki buyum bilan to‘sib qo‘yildi!")
                               }
+                              triggerAudioVideoClip(cfg, "Kamera obyektivi to‘sib qo‘yildi")
                           }
                       }
 
                       if (!isWithinSchedule(cfg)) {
                           prevPhoneGray = currGray
+                          prevPhoneMeanLuma = avgBrightness
+                          consecutivePhoneHits = 0
                           return
                       }
 
                       val prev = prevPhoneGray
+                      val prevMean = prevPhoneMeanLuma
                       prevPhoneGray = currGray
-                      if (prev == null) return
+                      prevPhoneMeanLuma = avgBrightness
+                      if (prev == null || prevMean < 0) return
 
-                      val sens = cfg.optInt("sens", 28).coerceIn(5, 95)
-                      val pixelThresh = (110 - sens).coerceIn(12, 85)
-                      val ratioThresh = ((105 - sens) * 0.0018).coerceIn(0.015, 0.25)
+                      val sens = cfg.optInt("sens", 25).coerceIn(5, 95)
+                      val ratioThresh = ((105 - sens) * 0.0022).coerceIn(0.035, 0.28)
+                      val ratio = computeIlluminationInvariantMotion(currGray, prev, avgBrightness, prevMean, sens)
 
-                      var changed = 0
-                      for (i in currGray.indices) {
-                          val d = abs((currGray[i].toInt() and 0xFF) - (prev[i].toInt() and 0xFF))
-                          if (d > pixelThresh) changed++
+                      if (ratio >= ratioThresh && ratio < 0.85) {
+                          consecutivePhoneHits++
+                      } else {
+                          consecutivePhoneHits = 0
                       }
-                      val ratio = changed.toDouble() / currGray.size.toDouble()
-                      if (ratio >= ratioThresh) {
-                          val cool = cfg.optInt("cool", 10).coerceIn(3, 600)
+
+                      // Kamida 2 ta ketma-ket kadrda haqiqiy ob'ekt siljishi bo'lsagina tasdiqlanadi
+                      if (consecutivePhoneHits >= 2) {
+                          consecutivePhoneHits = 0
+                          val cool = cfg.optInt("cool", 12).coerceIn(3, 600)
                           val last = lastAlertMsMap["phone"] ?: 0L
                           if (nowMs - last >= cool * 1000L) {
-                              lastAlertMsMap["phone"] = nowMs
-                              val alertJpeg = imageProxyToJpeg(image, 78) ?: jpegBytes
+                              val alertJpeg = imageProxyToJpeg(image, 80) ?: jpegBytes
                               if (alertJpeg != null) {
                                   latestFullJpeg.set(alertJpeg)
                                   networkExecutor.execute {
-                                      handleMotionWithAiAndZoom(cfg, "Telefon kamerasi", alertJpeg, ratio, isPhone = true)
+                                      verifyAndTriggerTheftAlert(cfg, "Telefon kamerasi", alertJpeg, ratio, isPhone = true)
                                   }
                               }
                           }
@@ -1859,7 +1955,8 @@ jobs:
                   }
               }
 
-              private fun handleMotionWithAiAndZoom(
+              // ML Kit bilan haqiqiy obyekt/odam borligini tasdiqlab, so'ng o'g'irlik/harakat signalini yuborish
+              private fun verifyAndTriggerTheftAlert(
                   cfg: JSONObject,
                   sourceName: String,
                   rawJpeg: ByteArray,
@@ -1873,15 +1970,25 @@ jobs:
                   if (faceScan.totalFaces > 0 && faceScan.unknownCount == 0 && faceScan.knownNames.isNotEmpty()) {
                       val names = faceScan.knownNames.distinct().joinToString(", ")
                       lastRecognizedPerson = names
-                      addEvent("😊 Tanish odam aniqlandi: $names (Signal yuborilmadi)")
+                      addEvent("😊 Uy egasi / tanish aniqlandi: $names (Signal yuborilmadi)")
                       return
                   }
 
-                  val objRes = detectObjectBox(bmp)
+                  val objRes = detectRealObject(bmp)
+                  val hasConfirmedSubject = (faceScan.unknownCount > 0) || objRes.first.isNotEmpty()
+
+                  // Agar na yuz, na ML Kit obyekti topilmasa va harakat 14% dan kichik bo'lsa -> yolg'on soya/shovqin, e'tiborsiz qoldiramiz!
+                  if (!hasConfirmedSubject && motionRatio < 0.14) {
+                      return
+                  }
+
+                  val key = if (isPhone) "phone" else sourceName
+                  lastAlertMsMap[key] = System.currentTimeMillis()
+
                   val label = when {
-                      faceScan.unknownCount > 0 -> "🚨 NOTANISH SHAXS (${faceScan.unknownCount} kishi)"
-                      objRes.first.isNotEmpty() -> objRes.first
-                      else -> "Harakat aniqlandi"
+                      faceScan.unknownCount > 0 -> "🚨 NOTANISH SHAXS / O‘G‘RILIK XAVFI (${faceScan.unknownCount} kishi)"
+                      objRes.first.isNotEmpty() -> "⚠️ ${objRes.first}"
+                      else -> "⚠️ Yirik obyekt harakati ($pct%)"
                   }
 
                   val targetBox = faceScan.primaryBox ?: objRes.second
@@ -1912,8 +2019,8 @@ jobs:
 
                   val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
                   val caption = buildString {
-                      appendLine("🚨 XAVF SIGNALI · $sourceName")
-                      appendLine("🔍 Tahlil: $label ($pct%)")
+                      appendLine("🚨 O‘G‘IRLIK / HARAKAT SIGNALI · $sourceName")
+                      appendLine("🔍 Tahlil: $label")
                       if (faceScan.knownNames.isNotEmpty()) {
                           appendLine("👤 Yonida tanish: ${faceScan.knownNames.joinToString(", ")}")
                       }
@@ -1921,26 +2028,33 @@ jobs:
                       append("🕒 Vaqt: $timeStr")
                   }
 
-                  addEvent("$sourceName: $label ($pct%)")
+                  addEvent("$sourceName: $label")
                   sendPhotoWithFallback(cfg, annotatedJpeg, caption)
 
                   if (isPhone && cfg.optBoolean("autoVideo", true)) {
-                      triggerVideoClip(cfg, "$sourceName: $label")
+                      triggerAudioVideoClip(cfg, "$sourceName: $label")
                   }
               }
 
-              private fun detectObjectBox(bmp: Bitmap): Pair<String, Rect?> {
+              private fun detectRealObject(bmp: Bitmap): Pair<String, Rect?> {
                   return try {
                       val img = InputImage.fromBitmap(bmp, 0)
                       val objects = Tasks.await(objectDetector.process(img))
                       if (objects.isEmpty()) return "" to null
-                      val best = objects.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }!!
-                      val cat = best.labels.maxByOrNull { it.confidence }?.text ?: ""
+                      val best = objects.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() } ?: return "" to null
+                      val areaRatio = (best.boundingBox.width() * best.boundingBox.height()).toFloat() / (bmp.width * bmp.height).toFloat()
+                      if (areaRatio < 0.025f) return "" to null
+
+                      val topLabel = best.labels.maxByOrNull { it.confidence }
+                      val cat = topLabel?.text ?: ""
+                      val conf = topLabel?.confidence ?: 0.5f
+                      if (conf < 0.42f && areaRatio < 0.08f) return "" to null
+
                       val uzLabel = when {
-                          cat.contains("Fashion", true) -> "Odam / Kiyim"
-                          cat.contains("Home", true) -> "Buyum harakati"
-                          cat.contains("Food", true) -> "Obyekt"
-                          else -> "Harakatdagi obyekt"
+                          cat.contains("Fashion", true) -> "Odam / Begona shaxs aniqlandi"
+                          cat.contains("Home", true) -> "Buyum o‘g‘irlanishi / siljishi"
+                          cat.contains("Food", true) -> "Obyekt harakati"
+                          else -> "Harakatdagi obyekt aniqlandi"
                       }
                       uzLabel to best.boundingBox
                   } catch (_: Exception) {
@@ -1976,49 +2090,132 @@ jobs:
 
                       val textPaint = Paint().apply {
                           color = Color.YELLOW
-                          textSize = (cropped.width * 0.045f).coerceIn(18f, 42f)
+                          textSize = (cropped.width * 0.042f).coerceIn(16f, 38f)
                           isFakeBoldText = true
                       }
-                      canvas.drawText("ZOOM: $label", 14f, textPaint.textSize + 10f, textPaint)
+                      canvas.drawText(label.take(32), 14f, textPaint.textSize + 10f, textPaint)
 
                       val out = ByteArrayOutputStream()
-                      cropped.compress(Bitmap.CompressFormat.JPEG, 82, out)
+                      cropped.compress(Bitmap.CompressFormat.JPEG, 84, out)
                       out.toByteArray()
                   } catch (_: Exception) {
                       null
                   }
               }
 
-              private fun triggerVideoClip(cfg: JSONObject, reason: String) {
+              // HAQIQIY OVOZLI (MICROPHONE AUDIO + VIDEO) MP4 YOZISH
+              @SuppressLint("MissingPermission")
+              private fun triggerAudioVideoClip(cfg: JSONObject, reason: String) {
                   if (recordingClip.getAndSet(true)) return
-                  networkExecutor.execute {
-                      try {
-                          val collected = mutableListOf<ByteArray>()
-                          synchronized(ringBufferLock) {
-                              collected.addAll(rollingFrames.toList().takeLast(14))
-                          }
-                          val startMs = System.currentTimeMillis()
-                          while (System.currentTimeMillis() - startMs < 6000L && collected.size < 36 && isRunning) {
-                              Thread.sleep(300L)
-                              latestFullJpeg.get()?.let { f ->
-                                  if (collected.isEmpty() || collected.last() !== f) {
-                                      collected.add(f)
+
+                  val vidCap = videoCapture
+                  val hasMicPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+                  if (vidCap != null && isRunning) {
+                      // AudioRecord bilan mikrofon band bo'lib qolmasligi uchun vaqtincha to'xtatamiz
+                      audioDetector?.stop()
+                      mainHandler.post {
+                          try {
+                              val outFile = File(cacheDir, "guard_av_${System.currentTimeMillis()}.mp4")
+                              val fileOpts = FileOutputOptions.Builder(outFile).build()
+                              var pendingRec = vidCap.output.prepareRecording(this, fileOpts)
+                              if (hasMicPerm) {
+                                  pendingRec = pendingRec.withAudioEnabled()
+                              }
+                              val rec = pendingRec.start(ContextCompat.getMainExecutor(this)) { event ->
+                                  if (event is VideoRecordEvent.Finalize) {
+                                      activeRecording = null
+                                      val hasErr = event.hasError()
+                                      networkExecutor.execute {
+                                          try {
+                                              if (!hasErr && outFile.exists() && outFile.length() > 4096) {
+                                                  sendTelegramVideo(cfg, outFile, "🎥 10 SONIYALI OVOZLI VIDEO DALIL\n$reason")
+                                                  addEvent("🎥 Ovozli video Telegramga yuborildi")
+                                              } else {
+                                                  recordFallbackSilentVideo(cfg, reason)
+                                              }
+                                          } finally {
+                                              outFile.delete()
+                                              recordingClip.set(false)
+                                              restartAudioDetectorIfEnabled()
+                                          }
+                                      }
                                   }
                               }
-                          }
-                          if (collected.size >= 4) {
-                              val tmpMp4 = File(cacheDir, "alert_${System.currentTimeMillis()}.mp4")
-                              val ok = JpegToMp4Encoder.encodeFramesToMp4(collected, tmpMp4, fps = 4)
-                              if (ok) {
-                                  sendTelegramVideo(cfg, tmpMp4, "🎥 10 SONIYALI VIDEO DALIL\n$reason")
+                              activeRecording = rec
+                              mainHandler.postDelayed({
+                                  try { rec.stop() } catch (_: Exception) {}
+                              }, 10_000L)
+                          } catch (_: Exception) {
+                              networkExecutor.execute {
+                                  recordFallbackSilentVideo(cfg, reason)
+                                  recordingClip.set(false)
+                                  restartAudioDetectorIfEnabled()
                               }
-                              tmpMp4.delete()
                           }
-                      } catch (_: Exception) {
-                      } finally {
+                      }
+                  } else {
+                      networkExecutor.execute {
+                          recordFallbackSilentVideo(cfg, reason)
                           recordingClip.set(false)
                       }
                   }
+              }
+
+              private fun restartAudioDetectorIfEnabled() {
+                  if (!isRunning) return
+                  val c = SecureStore.loadConfig(this)
+                  if (c.optBoolean("audioAlert", true)) {
+                      audioDetector?.start()
+                  }
+              }
+
+              private fun recordFallbackSilentVideo(cfg: JSONObject, reason: String) {
+                  try {
+                      val collected = mutableListOf<ByteArray>()
+                      synchronized(ringBufferLock) {
+                          collected.addAll(rollingFrames.toList().takeLast(14))
+                      }
+                      val startMs = System.currentTimeMillis()
+                      while (System.currentTimeMillis() - startMs < 6000L && collected.size < 36 && isRunning) {
+                          Thread.sleep(300L)
+                          latestFullJpeg.get()?.let { f ->
+                              if (collected.isEmpty() || collected.last() !== f) {
+                                  collected.add(f)
+                              }
+                          }
+                      }
+                      if (collected.size >= 4) {
+                          val tmpMp4 = File(cacheDir, "alert_${System.currentTimeMillis()}.mp4")
+                          val ok = JpegToMp4Encoder.encodeFramesToMp4(collected, tmpMp4, fps = 4)
+                          if (ok) {
+                              sendTelegramVideo(cfg, tmpMp4, "🎥 VIDEO DALIL\n$reason")
+                          }
+                          tmpMp4.delete()
+                      }
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun expandChannels(raw: String): List<Int> {
+                  val out = linkedSetOf<Int>()
+                  for (part in raw.split(",")) {
+                      val clean = part.trim()
+                      if (clean.contains("-")) {
+                          val bounds = clean.split("-")
+                          if (bounds.size == 2) {
+                              val a = bounds[0].trim().toIntOrNull()
+                              val b = bounds[1].trim().toIntOrNull()
+                              if (a != null && b != null && a in 1..64 && b in a..64) {
+                                  for (n in a..b) out.add(n)
+                              }
+                          }
+                      } else {
+                          val single = clean.toIntOrNull()
+                          if (single != null && single in 1..64) out.add(single)
+                      }
+                  }
+                  return out.toList()
               }
 
               private fun collectAllIpChannels(cfg: JSONObject): List<JSONObject> {
@@ -2033,13 +2230,14 @@ jobs:
                       val user = dev.optString("user", "")
                       val pass = dev.optString("pass", "")
                       val customUrl = dev.optString("customUrl", "").trim()
-                      val chList = dev.optString("channels", "1").split(",")
+                      val chList = expandChannels(dev.optString("channels", "1"))
 
                       if (type == "url" && customUrl.isNotEmpty()) {
                           channels.add(JSONObject().apply {
-                              put("key", "dev_${d}_url")
+                              put("key", "dev_${d}_ch_1")
                               put("title", devName)
                               put("url", customUrl)
+                              put("fallbackUrl", "")
                               put("user", user)
                               put("pass", pass)
                           })
@@ -2048,17 +2246,26 @@ jobs:
 
                       if (ip.isEmpty()) continue
                       val base = if (ip.startsWith("http://") || ip.startsWith("https://")) ip else "http://$ip:$port"
+                      val useSubStream = chList.size >= 6
 
-                      for (rawCh in chList) {
-                          val chNum = rawCh.trim().toIntOrNull() ?: continue
-                          val url = when (type) {
+                      for (chNum in chList) {
+                          val primaryUrl = when (type) {
                               "dahua" -> "$base/cgi-bin/snapshot.cgi?channel=$chNum"
-                              else -> "$base/ISAPI/Streaming/channels/${chNum}01/picture"
+                              else -> if (useSubStream) {
+                                  "$base/ISAPI/Streaming/channels/${chNum}02/picture"
+                              } else {
+                                  "$base/ISAPI/Streaming/channels/${chNum}01/picture"
+                              }
                           }
+                          val fallbackUrl = if (type != "dahua" && useSubStream) {
+                              "$base/ISAPI/Streaming/channels/${chNum}01/picture"
+                          } else ""
+
                           channels.add(JSONObject().apply {
                               put("key", "dev_${d}_ch_$chNum")
                               put("title", "$devName · CH$chNum")
-                              put("url", url)
+                              put("url", primaryUrl)
+                              put("fallbackUrl", fallbackUrl)
                               put("user", user)
                               put("pass", pass)
                           })
@@ -2067,62 +2274,90 @@ jobs:
                   return channels
               }
 
-              private fun pollAllIpCameras(cfg: JSONObject) {
+              private fun makeGridThumbnail(bmp: Bitmap): ByteArray {
+                  val targetW = 360
+                  val ratio = targetW.toFloat() / bmp.width.coerceAtLeast(1).toFloat()
+                  val targetH = (bmp.height * ratio).toInt().coerceIn(90, 270)
+                  val scaled = Bitmap.createScaledBitmap(bmp, targetW, targetH, false)
+                  val out = ByteArrayOutputStream()
+                  scaled.compress(Bitmap.CompressFormat.JPEG, 58, out)
+                  return out.toByteArray()
+              }
+
+              private fun pollAllIpCameras(cfg: JSONObject): Int {
                   val channels = collectAllIpChannels(cfg)
                   val validKeys = channels.map { it.optString("key") }.toSet()
                   ipGridMeta.keys.retainAll(validKeys)
                   ipGridFrames.keys.retainAll(validKeys)
+                  ipGridThumbnails.keys.retainAll(validKeys)
 
                   for (chObj in channels) {
                       val key = chObj.optString("key")
                       val title = chObj.optString("title")
                       val url = chObj.optString("url")
+                      val fallbackUrl = chObj.optString("fallbackUrl")
                       val user = chObj.optString("user")
                       val pass = chObj.optString("pass")
 
-                      networkExecutor.execute {
+                      if (inFlightChannels.putIfAbsent(key, true) != null) continue
+
+                      ipPollExecutor.execute {
                           try {
-                              val bytes = CameraAuthClient.fetchSnapshotBytes(url, user, pass)
+                              var bytes = CameraAuthClient.fetchSnapshotBytes(url, user, pass)
+                              if ((bytes == null || bytes.isEmpty()) && fallbackUrl.isNotEmpty()) {
+                                  bytes = CameraAuthClient.fetchSnapshotBytes(fallbackUrl, user, pass)
+                              }
+
+                              val online = bytes != null && bytes.isNotEmpty()
                               val meta = JSONObject().apply {
                                   put("key", key)
                                   put("title", title)
-                                  put("online", bytes != null && bytes.isNotEmpty())
+                                  put("online", online)
                                   put("ts", System.currentTimeMillis())
                               }
                               ipGridMeta[key] = meta
 
-                              if (bytes == null || bytes.isEmpty()) return@execute
+                              if (!online || bytes == null) return@execute
                               ipGridFrames[key] = bytes
                               latestIpPreviewJpeg.set(bytes)
 
                               val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@execute
-                              val currGray = bitmapToGray48x36(bmp)
-                              val prev = prevIpGrayMap.put(key, currGray)
-                              if (prev == null || !isWithinSchedule(cfg)) return@execute
-
-                              val sens = cfg.optInt("sens", 28).coerceIn(5, 95)
-                              val pixelThresh = (110 - sens).coerceIn(12, 85)
-                              val ratioThresh = ((105 - sens) * 0.0018).coerceIn(0.015, 0.25)
-
-                              var changed = 0
-                              for (i in currGray.indices) {
-                                  val d = abs((currGray[i].toInt() and 0xFF) - (prev[i].toInt() and 0xFF))
-                                  if (d > pixelThresh) changed++
+                              if (uiVisible.get()) {
+                                  ipGridThumbnails[key] = makeGridThumbnail(bmp)
                               }
-                              val ratio = changed.toDouble() / currGray.size.toDouble()
-                              if (ratio >= ratioThresh) {
-                                  val cool = cfg.optInt("cool", 10).coerceIn(3, 600)
+
+                              val (currGray, currMean) = bitmapToGrayAndMean48x36(bmp)
+                              val prev = prevIpGrayMap.put(key, currGray)
+                              val prevMean = prevIpMeanLumaMap.put(key, currMean) ?: -1
+                              if (prev == null || prevMean < 0 || !isWithinSchedule(cfg)) return@execute
+
+                              val sens = cfg.optInt("sens", 25).coerceIn(5, 95)
+                              val ratioThresh = ((105 - sens) * 0.0022).coerceIn(0.035, 0.28)
+                              val ratio = computeIlluminationInvariantMotion(currGray, prev, currMean, prevMean, sens)
+
+                              val hits = if (ratio >= ratioThresh && ratio < 0.85) {
+                                  (consecutiveIpHitsMap[key] ?: 0) + 1
+                              } else {
+                                  0
+                              }
+                              consecutiveIpHitsMap[key] = hits
+
+                              if (hits >= 2) {
+                                  consecutiveIpHitsMap[key] = 0
+                                  val cool = cfg.optInt("cool", 12).coerceIn(3, 600)
                                   val now = System.currentTimeMillis()
-                                  val last = lastAlertMsMap[key] ?: 0L
+                                  val last = lastAlertMsMap[title] ?: 0L
                                   if (now - last >= cool * 1000L) {
-                                      lastAlertMsMap[key] = now
-                                      handleMotionWithAiAndZoom(cfg, title, bytes, ratio, isPhone = false)
+                                      verifyAndTriggerTheftAlert(cfg, title, bytes, ratio, isPhone = false)
                                   }
                               }
                           } catch (_: Exception) {
+                          } finally {
+                              inFlightChannels.remove(key)
                           }
                       }
                   }
+                  return channels.size
               }
 
               private fun captureAndSendBurst(cfg: JSONObject) {
@@ -2202,17 +2437,18 @@ jobs:
                       }
                       cmd.startsWith("/video") -> {
                           addEvent("📲 Telegram buyrug‘i: /video")
-                          sendTelegramText(cfg, "🎥 10 soniyali video yozilmoqda...")
-                          triggerVideoClip(cfg, "Telegram /video buyrug‘i")
+                          sendTelegramText(cfg, "🎥 10 soniyali ovozli video yozilmoqda...")
+                          triggerAudioVideoClip(cfg, "Telegram /video buyrug‘i")
                       }
                       cmd.startsWith("/holat") -> {
                           val bat = getBatteryPercent()
                           val qSize = OfflineQueue.size(this)
                           val chCount = ipGridMeta.size
+                          val onlineCount = ipGridMeta.values.count { it.optBoolean("online", false) }
                           val statusMsg = buildString {
                               appendLine("🛡 QO‘RIQLASH PRO HOLATI")
                               appendLine("• Holat: ${if (isRunning) "FAOL ✅" else "TO‘XTATILGAN ⛔"}")
-                              appendLine("• Ulangan IP kanallar: $chCount ta")
+                              appendLine("• IP kanallar: $onlineCount / $chCount ta onlayn")
                               appendLine("• Batareya: $bat%")
                               appendLine("• Bugun kirish/chiqish: $countEnterToday / $countExitToday")
                               append("• Oflayn navbat: $qSize ta rasm")
@@ -2342,13 +2578,14 @@ jobs:
                       val now = System.currentTimeMillis()
                       if (now - lastTamperMs > 25_000L) {
                           lastTamperMs = now
-                          addEvent("📳 Telefon joyidan qimirlatildi yoki silkitildi!")
+                          addEvent("🚨 O‘G‘IRLIK XAVFI: Qo‘riqlash qurilmasi joyidan qo‘zg‘atildi!")
                           val frame = latestFullJpeg.get()
                           if (frame != null) {
-                              sendPhotoWithFallback(cfg, frame, "🚨 BUZG‘UNCHILIK!\nQo‘riqlash telefoni joyidan qo‘zg‘atildi!")
+                              sendPhotoWithFallback(cfg, frame, "🚨 O‘G‘IRLIK XAVFI!\nQo‘riqlash telefoni joyidan ko‘tarildi yoki urildi!")
                           } else {
-                              sendTelegramText(cfg, "🚨 BUZG‘UNCHILIK!\nQo‘riqlash telefoni joyidan qo‘zg‘atildi!")
+                              sendTelegramText(cfg, "🚨 O‘G‘IRLIK XAVFI!\nQo‘riqlash telefoni joyidan ko‘tarildi yoki urildi!")
                           }
+                          triggerAudioVideoClip(cfg, "Telefon joyidan ko‘tarildi / o‘g‘irlik xavfi")
                       }
                   }
                   checkPowerDisconnect(cfg)
@@ -2367,7 +2604,7 @@ jobs:
                       val now = System.currentTimeMillis()
                       if (now - lastPowerAlertMs > 60_000L) {
                           lastPowerAlertMs = now
-                          addEvent("🔌 220V elektr toki / zaryad uzildi!")
+                          addEvent("🔌 220V elektr toki uzildi (O‘g‘irlikdan oldin tok uzilgan bo‘lishi mumkin)!")
                           sendTelegramText(cfg, "⚡ DIQQAT! Binoda 220V elektr toki uzildi (telefon batareyaga o‘tdi).")
                       }
                   }
@@ -2454,11 +2691,12 @@ jobs:
                   return nv21
               }
 
-              private fun bitmapToGray48x36(bmp: Bitmap): ByteArray {
+              private fun bitmapToGrayAndMean48x36(bmp: Bitmap): Pair<ByteArray, Int> {
                   val gw = 48
                   val gh = 36
                   val scaled = Bitmap.createScaledBitmap(bmp, gw, gh, false)
                   val out = ByteArray(gw * gh)
+                  var sum = 0L
                   var idx = 0
                   for (y in 0 until gh) {
                       for (x in 0 until gw) {
@@ -2466,10 +2704,12 @@ jobs:
                           val r = (p shr 16) and 0xFF
                           val g = (p shr 8) and 0xFF
                           val b = p and 0xFF
-                          out[idx++] = ((r * 30 + g * 59 + b * 11) / 100).toByte()
+                          val l = (r * 30 + g * 59 + b * 11) / 100
+                          out[idx++] = l.toByte()
+                          sum += l
                       }
                   }
-                  return out
+                  return out to (sum / (gw * gh)).toInt()
               }
 
               private fun playLocalAlarmBeep() {
@@ -2546,6 +2786,7 @@ jobs:
                   try { wakeLock?.release() } catch (_: Exception) {}
                   lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
                   cameraExecutor.shutdownNow()
+                  ipPollExecutor.shutdownNow()
                   networkExecutor.shutdownNow()
                   super.onDestroy()
               }
@@ -2602,6 +2843,9 @@ jobs:
                           req.grant(req.resources)
                           pendingPermissionRequest = null
                       }
+                      if (MonitorForegroundService.isRunning) {
+                          MonitorForegroundService.rebindCameraIfRunning()
+                      }
                   }
 
               @SuppressLint("SetJavaScriptEnabled")
@@ -2613,14 +2857,8 @@ jobs:
                       setBackgroundColor(Color.parseColor("#030712"))
                   }
 
-                  previewView = PreviewView(this).apply {
-                      implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                      scaleType = PreviewView.ScaleType.FILL_CENTER
-                      visibility = View.GONE
-                  }
-
                   webView = WebView(this).apply {
-                      setBackgroundColor(Color.TRANSPARENT)
+                      setBackgroundColor(Color.parseColor("#030712"))
                       settings.javaScriptEnabled = true
                       settings.domStorageEnabled = true
                       settings.mediaPlaybackRequiresUserGesture = false
@@ -2643,1768 +2881,10 @@ jobs:
                               }
                           }
                       }
-
-                      addJavascriptInterface(CameraBridge(this@MainActivity, this, previewView), "Android")
-                      loadUrl("file:///android_asset/index.html")
                   }
 
-                  val lp = FrameLayout.LayoutParams(
-                      FrameLayout.LayoutParams.MATCH_PARENT,
-                      300,
-                      Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                  )
-                  root.addView(previewView, lp)
-                  root.addView(
-                      webView,
-                      FrameLayout.LayoutParams(
-                          FrameLayout.LayoutParams.MATCH_PARENT,
-                          FrameLayout.LayoutParams.MATCH_PARENT
-                      )
-                  )
-
-                  setContentView(root)
-                  MonitorForegroundService.previewSurfaceProvider.set(previewView.surfaceProvider)
-                  ensurePermissions()
-              }
-
-              override fun onResume() {
-                  super.onResume()
-                  MonitorForegroundService.uiVisible.set(true)
-                  MonitorForegroundService.previewSurfaceProvider.set(previewView.surfaceProvider)
-                  if (MonitorForegroundService.isRunning) {
-                      MonitorForegroundService.rebindCameraIfRunning()
-                  }
-              }
-
-              override fun onPause() {
-                  MonitorForegroundService.uiVisible.set(false)
-                  MonitorForegroundService.previewSurfaceProvider.set(null)
-                  if (MonitorForegroundService.isRunning) {
-                      MonitorForegroundService.rebindCameraIfRunning()
-                  }
-                  super.onPause()
-              }
-
-              private fun ensurePermissions() {
-                  val perms = mutableListOf(
-                      Manifest.permission.CAMERA,
-                      Manifest.permission.RECORD_AUDIO
-                  )
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                      perms.add(Manifest.permission.POST_NOTIFICATIONS)
-                  }
-                  val missing = perms.filter {
-                      ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-                  }
-                  if (missing.isNotEmpty()) {
-                      requestPermissionsLauncher.launch(missing.toTypedArray())
-                  }
-              }
-
-              private class CameraBridge(
-                  private val activity: FragmentActivity,
-                  private val webView: WebView,
-                  private val previewView: PreviewView
-              ) {
-                  private val ioExec = Executors.newSingleThreadExecutor()
-
-                  @JavascriptInterface
-                  fun getDeviceId(): String = SecureStore.getDeviceId(activity)
-
-                  @JavascriptInterface
-                  fun getClientProfile(): String {
-                      return JSONObject().apply {
-                          put("id", SecureStore.getDeviceId(activity))
-                          put("name", SecureStore.getClientName(activity))
-                          put("phone", SecureStore.getClientPhone(activity))
-                          put("expiresAt", SecureStore.getRemoteExpires(activity))
-                          put("tokenLocked", RemoteControlClient.hasTokenQuick(activity))
-                      }.toString()
-                  }
-
-                  @JavascriptInterface
-                  fun saveCustomServerToken(token: String) {
-                      ioExec.execute {
-                          SecureStore.setCustomToken(activity, token)
-                          checkRemoteControl()
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun registerClientProfile(name: String, phone: String) {
-                      ioExec.execute {
-                          SecureStore.setClientProfile(activity, name, phone)
-                          checkRemoteControl()
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun checkRemoteControl() {
-                      ioExec.execute {
-                          val st = RemoteControlClient.syncNow(activity, MonitorForegroundService.isRunning)
-                          val escMsg = st.message.replace("\\", "\\\\").replace("'", "\\'")
-                          val escExp = st.expiresAt.replace("\\", "\\\\").replace("'", "\\'")
-                          val escSync = st.syncStatus.replace("\\", "\\\\").replace("'", "\\'")
-                          activity.runOnUiThread {
-                              webView.evaluateJavascript("window.onRemoteControlUpdated(${st.active}, '$escMsg', '$escExp', '$escSync', ${st.tokenConfigured});", null)
-                          }
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun isRemoteActive(): Boolean = SecureStore.isRemoteActive(activity)
-
-                  @JavascriptInterface
-                  fun getRemoteMessage(): String = SecureStore.getRemoteMessage(activity)
-
-                  @JavascriptInterface
-                  fun isCreatorActivated(): Boolean = SecureStore.isCreatorActivated(activity)
-
-                  @JavascriptInterface
-                  fun activateCreatorCode(code: String): Boolean =
-                      SecureStore.verifyAndActivateCreatorCode(activity, code)
-
-                  @JavascriptInterface
-                  fun saveSecureConfig(json: String) {
-                      ioExec.execute {
-                          SecureStore.saveConfigJson(activity, json)
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun loadSecureConfig(): String = SecureStore.loadConfigJson(activity)
-
-                  @JavascriptInterface
-                  fun hasPin(): Boolean = SecureStore.hasPin(activity)
-
-                  @JavascriptInterface
-                  fun setPin(pin: String): Boolean {
-                      val clean = pin.trim()
-                      if (clean.length < 4) return false
-                      SecureStore.setPin(activity, clean)
-                      return true
-                  }
-
-                  @JavascriptInterface
-                  fun verifyPin(pin: String): Boolean = SecureStore.checkPin(activity, pin)
-
-                  @JavascriptInterface
-                  fun getIpGridFrames(): String = MonitorForegroundService.buildGridSnapshotJson()
-
-                  @JavascriptInterface
-                  fun enrollFaceFromCurrentFrame(personName: String) {
-                      ioExec.execute {
-                          val frame = MonitorForegroundService.latestFullJpeg.get()
-                          val res = if (frame == null || frame.isEmpty()) {
-                              false to "Avval nazoratni yoqib, yuzingizni kameraga qarating"
-                          } else {
-                              FaceProfileManager.enrollFromJpeg(activity, personName, frame)
-                          }
-                          val escMsg = res.second.replace("\\", "\\\\").replace("'", "\\'")
-                          activity.runOnUiThread {
-                              webView.evaluateJavascript("window.onFaceEnrolled(${res.first}, '$escMsg');", null)
-                          }
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun getKnownFaces(): String = FaceProfileManager.listProfilesSummary(activity)
-
-                  @JavascriptInterface
-                  fun removeKnownFace(id: String) {
-                      ioExec.execute {
-                          FaceProfileManager.removeProfile(activity, id)
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun recordVideoNow() {
-                      val i = Intent(activity, MonitorForegroundService::class.java).apply {
-                          action = MonitorForegroundService.ACTION_VIDEO_NOW
-                      }
-                      activity.startService(i)
-                  }
-
-                  @JavascriptInterface
-                  fun promptBiometric(purpose: String) {
-                      activity.runOnUiThread {
-                          try {
-                              val bm = BiometricManager.from(activity)
-                              val canAuth = bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
-                              if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
-                                  webView.evaluateJavascript("window.onBioResult('$purpose', false);", null)
-                                  return@runOnUiThread
-                              }
-                              val executor = ContextCompat.getMainExecutor(activity)
-                              val prompt = BiometricPrompt(
-                                  activity,
-                                  executor,
-                                  object : BiometricPrompt.AuthenticationCallback() {
-                                      override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                                          webView.evaluateJavascript("window.onBioResult('$purpose', true);", null)
-                                      }
-                                      override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                                          webView.evaluateJavascript("window.onBioResult('$purpose', false);", null)
-                                      }
-                                  }
-                              )
-                              val info = BiometricPrompt.PromptInfo.Builder()
-                                  .setTitle("Qo‘riqlash tasdig‘i")
-                                  .setSubtitle("Barmoq izi yoki yuz bilan tasdiqlang")
-                                  .setNegativeButtonText("PIN kiritish")
-                                  .build()
-                              prompt.authenticate(info)
-                          } catch (_: Exception) {
-                              webView.evaluateJavascript("window.onBioResult('$purpose', false);", null)
-                          }
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun detectChatId(token: String) {
-                      ioExec.execute {
-                          var foundId = ""
-                          var foundUser = ""
-                          try {
-                              val client = OkHttpClient.Builder()
-                                  .connectTimeout(5, TimeUnit.SECONDS)
-                                  .readTimeout(8, TimeUnit.SECONDS)
-                                  .build()
-                              val req = Request.Builder()
-                                  .url("https://api.telegram.org/bot${token.trim()}/getUpdates?limit=20")
-                                  .build()
-                              client.newCall(req).execute().use { resp ->
-                                  if (resp.isSuccessful) {
-                                      val root = JSONObject(resp.body?.string() ?: "")
-                                      if (root.optBoolean("ok", false)) {
-                                          val arr = root.optJSONArray("result") ?: JSONArray()
-                                          for (i in arr.length() - 1 downTo 0) {
-                                              val item = arr.optJSONObject(i) ?: continue
-                                              val msg = item.optJSONObject("message") ?: item.optJSONObject("channel_post") ?: continue
-                                              val chat = msg.optJSONObject("chat") ?: continue
-                                              val id = chat.optLong("id", 0L)
-                                              if (id != 0L) {
-                                                  foundId = id.toString()
-                                                  foundUser = chat.optString("username", chat.optString("first_name", ""))
-                                                  break
-                                              }
-                                          }
-                                      }
-                                  }
-                              }
-                          } catch (_: Exception) {
-                          }
-                          val escId = foundId.replace("'", "")
-                          val escUser = foundUser.replace("\\", "\\\\").replace("'", "\\'")
-                          activity.runOnUiThread {
-                              webView.evaluateJavascript("window.onChatIdDetected('$escId', '$escUser');", null)
-                          }
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun setPreviewRect(visible: Boolean, leftDp: Float, topDp: Float, widthDp: Float, heightDp: Float) {
-                      activity.runOnUiThread {
-                          if (!visible || widthDp <= 1f || heightDp <= 1f) {
-                              if (previewView.visibility != View.GONE) previewView.visibility = View.GONE
-                              return@runOnUiThread
-                          }
-                          val d = activity.resources.displayMetrics.density
-                          val lp = FrameLayout.LayoutParams(
-                              (widthDp * d).toInt(),
-                              (heightDp * d).toInt(),
-                              Gravity.TOP or Gravity.START
-                          ).apply {
-                              leftMargin = (leftDp * d).toInt()
-                              topMargin = (topDp * d).toInt()
-                          }
-                          previewView.layoutParams = lp
-                          if (previewView.visibility != View.VISIBLE) previewView.visibility = View.VISIBLE
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun requestIgnoreBattery() {
-                      activity.runOnUiThread {
-                          try {
-                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                  val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
-                                  if (!pm.isIgnoringBatteryOptimizations(activity.packageName)) {
-                                      val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                          data = Uri.parse("package:${activity.packageName}")
-                                      }
-                                      activity.startActivity(i)
-                                  }
-                              }
-                          } catch (_: Exception) {
-                          }
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun startOrUpdateBgMonitor(configJson: String) {
-                      ioExec.execute {
-                          if (!SecureStore.isRemoteActive(activity)) return@execute
-                          SecureStore.saveConfigJson(activity, configJson)
-                          SecureStore.setWasRunning(activity, true)
-                          val startIntent = Intent(activity, MonitorForegroundService::class.java).apply {
-                              action = MonitorForegroundService.ACTION_START
-                          }
-                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                              activity.startForegroundService(startIntent)
-                          } else {
-                              activity.startService(startIntent)
-                          }
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun stopBgMonitor() {
-                      ioExec.execute {
-                          SecureStore.setWasRunning(activity, false)
-                          activity.runOnUiThread {
-                              previewView.visibility = View.GONE
-                          }
-                          activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
-                              action = MonitorForegroundService.ACTION_STOP
-                          })
-                      }
-                  }
-
-                  @JavascriptInterface
-                  fun bgShotNow() {
-                      activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
-                          action = MonitorForegroundService.ACTION_SHOT
-                      })
-                  }
-
-                  @JavascriptInterface
-                  fun clearNativeEvents() {
-                      activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
-                          action = MonitorForegroundService.ACTION_CLEAR_LOG
-                      })
-                  }
-
-                  @JavascriptInterface
-                  fun getNativeEvents(): String = MonitorForegroundService.eventsJson
-
-                  @JavascriptInterface
-                  fun getBgState(): String {
-                      val o = JSONObject()
-                      o.put("running", MonitorForegroundService.isRunning)
-                      o.put("burst", MonitorForegroundService.isBurstRunning)
-                      o.put("burstCount", MonitorForegroundService.burstSentCount)
-                      o.put("status", MonitorForegroundService.lastStatusText)
-                      o.put("person", MonitorForegroundService.lastRecognizedPerson)
-                      o.put("enter", MonitorForegroundService.countEnterToday)
-                      o.put("exit", MonitorForegroundService.countExitToday)
-                      return o.toString()
-                  }
-              }
-          }
-          EOF
-
-          cat <<'EOF' > app/src/main/assets/index.html
-          <!DOCTYPE html>
-          <html lang="uz">
-          <head>
-            <meta charset="UTF-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-            <title>Qo‘riqlash Cyber-Pro</title>
-            <style>
-              :root {
-                --bg: #030712;
-                --card: rgba(15, 23, 42, 0.82);
-                --border: rgba(56, 189, 248, 0.25);
-                --cyan: #00f0ff;
-                --emerald: #10b981;
-                --rose: #f43f5e;
-                --text: #f1f5f9;
-                --muted: #94a3b8;
-              }
-              * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-              body {
-                margin: 0; font-family: 'Inter', system-ui, -apple-system, sans-serif;
-                background: radial-gradient(circle at top right, #0c1938 0%, #030712 55%);
-                color: var(--text); padding-bottom: 48px; min-height: 100vh;
-              }
-              .header {
-                display: flex; align-items: center; justify-content: space-between;
-                padding: 16px; background: rgba(3, 7, 18, 0.92);
-                border-bottom: 1px solid var(--border);
-                position: sticky; top: 0; z-index: 25;
-              }
-              .brand-wrap { display: flex; align-items: center; gap: 10px; }
-              .pulse-dot {
-                width: 11px; height: 11px; border-radius: 50%;
-                background: #64748b; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
-              }
-              .pulse-dot.active {
-                background: var(--emerald);
-                animation: pulseRing 1.8s infinite;
-              }
-              @keyframes pulseRing {
-                0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.75); }
-                70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
-                100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-              }
-              .brand {
-                font-weight: 900; font-size: 17px; letter-spacing: 1px;
-                background: linear-gradient(90deg, #00f0ff, #38bdf8, #818cf8);
-                -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-              }
-              .sub-brand { font-size: 11px; color: var(--muted); margin-top: 2px; }
-              .icon-btn {
-                background: rgba(30, 41, 59, 0.9); color: #fff;
-                border: 1px solid rgba(56, 189, 248, 0.35);
-                border-radius: 12px; padding: 9px 14px; font-size: 13px; font-weight: 700;
-              }
-              .card {
-                background: var(--card);
-                border: 1px solid var(--border); border-radius: 20px;
-                margin: 14px; padding: 16px;
-                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-              }
-              .card-title {
-                font-size: 12px; font-weight: 800; color: var(--cyan);
-                text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;
-                display: flex; justify-content: space-between; align-items: center;
-              }
-              .preview-shell {
-                position: relative; width: 100%; height: 210px; border-radius: 16px;
-                background: #020617; border: 1px solid rgba(0, 240, 255, 0.3);
-                overflow: hidden;
-              }
-              .preview-box {
-                width: 100%; height: 100%; display: flex; flex-direction: column;
-                align-items: center; justify-content: center; color: #64748b; font-size: 13px;
-              }
-              .hud-corner {
-                position: absolute; width: 18px; height: 18px; border-color: var(--cyan);
-                border-style: solid; pointer-events: none; z-index: 5;
-              }
-              .tl { top: 8px; left: 8px; border-width: 2px 0 0 2px; border-radius: 4px 0 0 0; }
-              .tr { top: 8px; right: 8px; border-width: 2px 2px 0 0; border-radius: 0 4px 0 0; }
-              .bl { bottom: 8px; left: 8px; border-width: 0 0 2px 2px; border-radius: 0 0 0 4px; }
-              .br { bottom: 8px; right: 8px; border-width: 0 2px 2px 0; border-radius: 0 0 4px 0; }
-              .grid-wrap { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-              .grid-item {
-                background: #020617; border: 1px solid #1e293b; border-radius: 14px;
-                overflow: hidden; position: relative; min-height: 115px;
-              }
-              .grid-item img { width: 100%; height: 115px; object-fit: cover; display: block; }
-              .grid-label {
-                position: absolute; bottom: 0; left: 0; right: 0;
-                background: linear-gradient(transparent, rgba(2,6,23,.92));
-                color: #f8fafc; font-size: 11px; font-weight: 600;
-                padding: 8px 8px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-              }
-              .row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-              .btn {
-                flex: 1; padding: 13px; border-radius: 14px; border: none;
-                font-weight: 800; font-size: 14px; letter-spacing: .4px; cursor: pointer;
-                text-align: center;
-              }
-              .btn:active { transform: scale(0.97); }
-              .btn-start {
-                background: linear-gradient(135deg, #10b981, #059669); color: #fff;
-                box-shadow: 0 6px 20px rgba(16, 185, 129, 0.35);
-              }
-              .btn-stop {
-                background: linear-gradient(135deg, #f43f5e, #be123c); color: #fff;
-                box-shadow: 0 6px 20px rgba(244, 63, 94, 0.3);
-              }
-              .btn-sec {
-                background: rgba(30, 41, 59, 0.9); color: #e2e8f0;
-                border: 1px solid rgba(148, 163, 184, 0.25);
-              }
-              .btn-accent {
-                background: linear-gradient(135deg, #0284c7, #0369a1); color: #fff;
-              }
-              label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 5px; font-weight: 600; }
-              input, select {
-                width: 100%; padding: 11px 13px; border-radius: 12px;
-                border: 1px solid #334155; background: rgba(2, 6, 23, 0.95);
-                color: #f8fafc; font-size: 14px; outline: none;
-              }
-              input:focus, select:focus { border-color: var(--cyan); }
-              .dev-card {
-                background: rgba(2, 6, 23, 0.9); border: 1px solid #1e293b;
-                border-radius: 14px; padding: 12px; margin-top: 10px;
-              }
-              .dev-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 14px; }
-              .chk-row {
-                display: flex; align-items: center; justify-content: space-between;
-                padding: 10px 0; border-bottom: 1px solid rgba(30, 41, 59, 0.8); font-size: 13px;
-              }
-              .chk-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--cyan); }
-              .stat-grid {
-                display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px;
-              }
-              .stat-tile {
-                background: rgba(2, 6, 23, 0.9); border: 1px solid rgba(56, 189, 248, 0.18);
-                border-radius: 12px; padding: 10px 6px; text-align: center;
-              }
-              .stat-val { font-size: 18px; font-weight: 900; color: var(--cyan); }
-              .stat-lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
-              .log-item {
-                font-size: 12px; padding: 8px 0; border-bottom: 1px solid rgba(30, 41, 59, 0.7); color: #cbd5e1;
-              }
-              .locked-box {
-                background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4);
-                border-radius: 12px; padding: 12px; font-size: 13px; color: #34d399;
-                display: flex; justify-content: space-between; align-items: center; margin-top: 6px;
-              }
-              .overlay {
-                position: fixed; inset: 0; background: rgba(3, 7, 18, 0.98); z-index: 99;
-                display: none; flex-direction: column; align-items: center; justify-content: center;
-                padding: 24px; text-align: center;
-              }
-              .overlay.show { display: flex; }
-              .overlay h2 { color: var(--cyan); margin-bottom: 8px; }
-              .overlay p { color: var(--muted); font-size: 14px; max-width: 340px; }
-              .overlay input { max-width: 300px; margin: 10px 0; text-align: center; }
-              .modal-zoom {
-                position: fixed; inset: 0; background: rgba(0,0,0,.94); z-index: 80;
-                display: none; flex-direction: column; align-items: center; justify-content: center; padding: 16px;
-              }
-              .modal-zoom.show { display: flex; }
-              .modal-zoom img { max-width: 100%; max-height: 80vh; border-radius: 14px; border: 1px solid var(--cyan); }
-            </style>
-          </head>
-          <body>
-
-            <!-- 1. OBUNA BLOK EKRANI -->
-            <div id="blockOverlay" class="overlay">
-              <h2 style="color:#f43f5e;">⛔ OBUNA TO‘XTATILGAN</h2>
-              <p id="blockReason">Obuna muddatingiz tugagan yoki faolsizlantirilgan.</p>
-              <p id="blockDevId" style="font-size:12px;color:#38bdf8;margin-top:8px;"></p>
-              <button class="btn btn-accent" style="max-width:260px;margin-top:16px;" onclick="recheckSub()">🔄 Holatni qayta tekshirish</button>
-            </div>
-
-            <!-- 2. MIJOZ RO'YXATDAN O'TISH EKRANI -->
-            <div id="registerOverlay" class="overlay">
-              <h2>👤 MIJOZ RO‘YXATDAN O‘TISHI</h2>
-              <p>Ilovadan foydalanish uchun ismingiz va telefon raqamingizni kiriting. Qurilma ID avtomatik biriktiriladi.</p>
-              <p id="regDevId" style="font-size:12px;color:#38bdf8;"></p>
-              <input id="regName" placeholder="Ismingiz (masalan: Jasur)" />
-              <input id="regPhone" placeholder="Telefon (+998901234567)" />
-              <button class="btn btn-start" style="max-width:300px;margin-top:10px;" onclick="submitRegistration()">✅ Ro‘yxatdan o‘tish va kirish</button>
-            </div>
-
-            <!-- 3. YARATUVCHI KODI (ALISA) -->
-            <div id="creatorOverlay" class="overlay">
-              <h2>🔐 FAOLLASHTIRISH KODI</h2>
-              <p>Ilovani birinchi marta ishga tushirish uchun maxsus ruxsat kodini kiriting.</p>
-              <input id="creatorCodeInput" placeholder="Maxsus kod" />
-              <button class="btn btn-accent" style="max-width:300px;margin-top:10px;" onclick="verifyCreator()">Tasdiqlash</button>
-            </div>
-
-            <!-- 4. PIN / BIOMETRIK QULF -->
-            <div id="pinOverlay" class="overlay">
-              <h2>🛡 XAVFSIZLIK QULFI</h2>
-              <p>Sozlamalarni ochish uchun PIN kodni kiriting.</p>
-              <input id="pinInput" type="password" inputmode="numeric" maxlength="8" placeholder="PIN kod" />
-              <button class="btn btn-accent" style="max-width:300px;margin-top:10px;" onclick="checkPinNow()">Ochish</button>
-            </div>
-
-            <!-- KATTALASHTIRILGAN KAMERA MODALI -->
-            <div id="zoomModal" class="modal-zoom" onclick="this.classList.remove('show')">
-              <img id="zoomImg" src="" />
-              <p id="zoomTitle" style="color:#fff;margin-top:10px;font-weight:700;"></p>
-            </div>
-
-            <div class="header">
-              <div class="brand-wrap">
-                <div id="liveDot" class="pulse-dot"></div>
-                <div>
-                  <div class="brand">QO‘RIQLASH AI</div>
-                  <div class="sub-brand" id="subHeaderInfo">Yuklanmoqda...</div>
-                  <div class="sub-brand" id="serverSyncBadge" style="color:#38bdf8;"></div>
-                </div>
-              </div>
-              <button class="icon-btn" onclick="toggleSettings()">⚙️ Sozlash</button>
-            </div>
-
-            <!-- ASOSIY MONITOR EKRANI -->
-            <div id="mainView">
-              <div class="card">
-                <div class="card-title">
-                  <span>📡 Jonli Optik Nazorat</span>
-                  <span id="statusBadge" style="color:#94a3b8;">KUTISHDA</span>
-                </div>
-                <div class="preview-shell">
-                  <div class="hud-corner tl"></div>
-                  <div class="hud-corner tr"></div>
-                  <div class="hud-corner bl"></div>
-                  <div class="hud-corner br"></div>
-                  <div id="previewAnchor" class="preview-box">
-                    <span style="font-size:28px;margin-bottom:6px;">🛡</span>
-                    <span>Nazoratni yoqish uchun BOSHLASH tugmasini bosing</span>
-                  </div>
-                </div>
-
-                <div class="stat-grid">
-                  <div class="stat-tile">
-                    <div class="stat-val" id="cntIn">0</div>
-                    <div class="stat-lbl">📥 Kirish</div>
-                  </div>
-                  <div class="stat-tile">
-                    <div class="stat-val" id="cntOut">0</div>
-                    <div class="stat-lbl">📤 Chiqish</div>
-                  </div>
-                  <div class="stat-tile">
-                    <div class="stat-val" id="cntMode">TELEFON</div>
-                    <div class="stat-lbl">🎥 Rejim</div>
-                  </div>
-                </div>
-
-                <div class="row">
-                  <button class="btn btn-start" onclick="startGuard()">▶ BOSHLASH</button>
-                  <button class="btn btn-stop" onclick="stopGuard()">⏹ TO‘XTATISH</button>
-                </div>
-                <div class="row">
-                  <button class="btn btn-sec" onclick="Android.bgShotNow()">📸 Oniy rasm</button>
-                  <button class="btn btn-sec" onclick="Android.recordVideoNow()">🎥 10s Video</button>
-                </div>
-              </div>
-
-              <!-- IP KAMERALAR PARALLEL KATAGI -->
-              <div class="card">
-                <div class="card-title">
-                  <span>📹 IP Kameralar / NVR Tarmog‘i</span>
-                  <span id="ipCountLabel">0 kanal</span>
-                </div>
-                <div id="ipGrid" class="grid-wrap"></div>
-              </div>
-
-              <!-- VOQEALAR JURNALI -->
-              <div class="card">
-                <div class="card-title">
-                  <span>📋 Xavfsizlik Jurnali</span>
-                  <span style="color:#f43f5e;font-size:11px;cursor:pointer;" onclick="Android.clearNativeEvents()">Tozalash</span>
-                </div>
-                <div id="eventsBox"></div>
-              </div>
-            </div>
-
-            <!-- SOZLAMALAR EKRANI -->
-            <div id="settingsView" style="display:none;">
-              <div class="card">
-                <div class="card-title"><span>1. Asosiy rejim va Kamera</span></div>
-                <label>Ishlash rejimi:</label>
-                <select id="cfgMode">
-                  <option value="phone">Faqat telefon kamerasi</option>
-                  <option value="ip">Faqat IP kameralar / NVR</option>
-                  <option value="both">Ikkalasi birga (Telefon + IP)</option>
-                </select>
-
-                <label>Telefon kamerasi:</label>
-                <select id="cfgLens">
-                  <option value="back">Orqa kamera</option>
-                  <option value="front">Old kamera</option>
-                </select>
-
-                <label>Sezgirlik (5 - 95):</label>
-                <input id="cfgSens" type="number" min="5" max="95" value="28" />
-
-                <label>Signallar orasidagi tanaffus (soniya):</label>
-                <input id="cfgCool" type="number" min="3" max="600" value="10" />
-
-                <label>IP kameralarni tekshirish oralig‘i (soniya):</label>
-                <input id="cfgIpSec" type="number" min="1" max="300" value="3" />
-              </div>
-
-              <!-- CHEKSIZ IP KAMERA / NVR QO'SHISH -->
-              <div class="card">
-                <div class="card-title">
-                  <span>2. IP Kameralar va NVR lar</span>
-                  <button class="btn-accent" style="border:none;border-radius:10px;padding:7px 11px;font-size:12px;font-weight:700;" onclick="addDevicePrompt()">➕ Yangi kamera</button>
-                </div>
-                <div id="devicesList"></div>
-              </div>
-
-              <!-- TELEGRAM BOT SOZLAMALARI -->
-              <div class="card">
-                <div class="card-title"><span>3. Telegram Bot</span></div>
-                <label>Bot Token:</label>
-                <input id="cfgToken" placeholder="123456:ABC-DEF..." />
-                <label>Chat ID:</label>
-                <div class="row" style="margin-top:4px;">
-                  <input id="cfgChatId" style="flex:2;" placeholder="-100... yoki 1234567" />
-                  <button class="btn btn-accent" style="flex:1;padding:10px;" onclick="autoDetectChat()">Aniqlash</button>
-                </div>
-              </div>
-
-              <!-- AQLLI XAVFSIZLIK FUNKSIYALARI -->
-              <div class="card">
-                <div class="card-title"><span>4. Aqlli Xavfsizlik va Jadval</span></div>
-                <div class="chk-row"><span>Avto-Zoom (obyektni yaqinlashtirish)</span><input id="cfgZoom" type="checkbox" checked /></div>
-                <div class="chk-row"><span>Xavfda 10 soniyali video yuborish</span><input id="cfgAutoVideo" type="checkbox" checked /></div>
-                <div class="chk-row"><span>Eshikdan kirish-chiqish hisobi</span><input id="cfgDoor" type="checkbox" checked /></div>
-                <div class="chk-row"><span>Tovush trevogasi (shisha/qichqiriq)</span><input id="cfgAudio" type="checkbox" checked /></div>
-                <div class="chk-row"><span>Buzg‘unchilik nazorati (silkitish/yopish)</span><input id="cfgTamper" type="checkbox" checked /></div>
-                <div class="chk-row"><span>220V elektr uzilishi nazorati</span><input id="cfgPower" type="checkbox" checked /></div>
-                <div class="chk-row"><span>Mahalliy sirena ovozi</span><input id="cfgSiren" type="checkbox" /></div>
-                <div class="chk-row"><span>Jadval bo‘yicha qo‘riqlash</span><input id="cfgSchedOn" type="checkbox" /></div>
-                <div class="row">
-                  <div style="flex:1;"><label>Boshlanish:</label><input id="cfgSchedStart" type="time" value="22:00" /></div>
-                  <div style="flex:1;"><label>Tugash:</label><input id="cfgSchedEnd" type="time" value="07:00" /></div>
-                </div>
-              </div>
-
-              <!-- TANISH YUZLAR (WHITELIST) -->
-              <div class="card">
-                <div class="card-title"><span>5. Tanish Yuzlar (Signal bermaydi)</span></div>
-                <div class="row">
-                  <input id="faceNameInput" style="flex:2;" placeholder="Ism (masalan: O'zim)" />
-                  <button class="btn btn-accent" style="flex:1;padding:10px;" onclick="enrollFaceNow()">Kameradan olish</button>
-                </div>
-                <div id="facesList" style="margin-top:8px;"></div>
-              </div>
-
-              <!-- ADMIN SERVER VA PIN -->
-              <div class="card">
-                <div class="card-title"><span>6. Server Tokeni va PIN</span></div>
-                <div id="tokenLockedView" class="locked-box" style="display:none;">
-                  <span>🔒 Server tokeni shifrlangan va saqlangan</span>
-                  <button style="background:#1e293b;color:#38bdf8;border:1px solid #38bdf8;border-radius:8px;padding:5px 9px;font-size:11px;" onclick="unlockTokenEdit()">Almashtirish</button>
-                </div>
-                <div id="tokenEditView">
-                  <label>Admin Server Token (bir marta kiritiladi):</label>
-                  <div class="row" style="margin-top:4px;">
-                    <input id="customTokenInput" type="password" style="flex:2;" placeholder="ghp_..." />
-                    <button class="btn btn-accent" style="flex:1;padding:10px;" onclick="saveServerToken()">Saqlash</button>
-                  </div>
-                </div>
-                <div class="row">
-                  <input id="newPinInput" type="password" inputmode="numeric" style="flex:2;" placeholder="Yangi PIN (4+ raqam)" />
-                  <button class="btn btn-sec" style="flex:1;padding:10px;" onclick="saveNewPin()">PIN qo‘yish</button>
-                </div>
-                <div class="row">
-                  <button class="btn btn-sec" onclick="Android.requestIgnoreBattery()">🔋 Batareya cheklovini o‘chirish</button>
-                </div>
-              </div>
-
-              <div class="row" style="padding:0 14px;">
-                <button class="btn btn-start" onclick="saveAndCloseSettings()">💾 SAQLASH VA YOPISH</button>
-              </div>
-            </div>
-
-          <script>
-            let devices = [];
-            let settingsUnlocked = false;
-            let lastRectKey = "";
-            let lastEventsRaw = "";
-            let lastGridRaw = "";
-            let loopTimer = null;
-
-            function setTokenUiLocked(locked) {
-              document.getElementById('tokenLockedView').style.display = locked ? 'flex' : 'none';
-              document.getElementById('tokenEditView').style.display = locked ? 'none' : 'block';
-            }
-
-            function unlockTokenEdit() {
-              setTokenUiLocked(false);
-            }
-
-            function initApp() {
-              const devId = Android.getDeviceId();
-              document.getElementById('regDevId').innerText = "Qurilma ID: " + devId;
-              document.getElementById('blockDevId').innerText = "Sizning ID: " + devId;
-
-              const prof = JSON.parse(Android.getClientProfile() || "{}");
-              setTokenUiLocked(!!prof.tokenLocked);
-
-              if (!prof.name) {
-                document.getElementById('registerOverlay').classList.add('show');
-              } else {
-                updateHeaderSub(prof);
-                setTimeout(() => Android.checkRemoteControl(), 500);
-              }
-
-              if (!Android.isCreatorActivated()) {
-                document.getElementById('creatorOverlay').classList.add('show');
-              }
-
-              loadCfgToUi();
-              refreshFaces();
-              scheduleNextSync();
-            }
-
-            function scheduleNextSync() {
-              if (loopTimer) clearTimeout(loopTimer);
-              loopTimer = setTimeout(() => {
-                try { syncUiLoop(); } catch (e) {}
-                scheduleNextSync();
-              }, 2500);
-            }
-
-            function updateHeaderSub(prof) {
-              const exp = prof.expiresAt ? (" · Obuna: " + prof.expiresAt) : "";
-              document.getElementById('subHeaderInfo').innerText = (prof.name || "Mijoz") + " (" + prof.id + ")" + exp;
-            }
-
-            function submitRegistration() {
-              const n = document.getElementById('regName').value.trim();
-              const p = document.getElementById('regPhone').value.trim();
-              if (!n) { alert("Iltimos, ismingizni kiriting!"); return; }
-              Android.registerClientProfile(n, p);
-              document.getElementById('registerOverlay').classList.remove('show');
-              const prof = JSON.parse(Android.getClientProfile() || "{}");
-              updateHeaderSub(prof);
-            }
-
-            function saveServerToken() {
-              const t = document.getElementById('customTokenInput').value.trim();
-              if (!t) return;
-              Android.saveCustomServerToken(t);
-              document.getElementById('customTokenInput').value = '';
-              setTokenUiLocked(true);
-            }
-
-            function verifyCreator() {
-              const code = document.getElementById('creatorCodeInput').value;
-              if (Android.activateCreatorCode(code)) {
-                document.getElementById('creatorOverlay').classList.remove('show');
-              } else {
-                alert("Kod noto‘g‘ri!");
-              }
-            }
-
-            window.onRemoteControlUpdated = function(active, msg, exp, syncSt, tokOk) {
-              const ov = document.getElementById('blockOverlay');
-              if (!active) {
-                document.getElementById('blockReason').innerText = msg || "Obuna muddatingiz tugagan.";
-                ov.classList.add('show');
-              } else {
-                ov.classList.remove('show');
-              }
-              if (syncSt) {
-                document.getElementById('serverSyncBadge').innerText = syncSt;
-              }
-              if (tokOk) setTokenUiLocked(true);
-              const prof = JSON.parse(Android.getClientProfile() || "{}");
-              if (exp) prof.expiresAt = exp;
-              updateHeaderSub(prof);
-            };
-
-            function recheckSub() {
-              Android.checkRemoteControl();
-            }
-
-            function toggleSettings() {
-              const sv = document.getElementById('settingsView');
-              const mv = document.getElementById('mainView');
-              if (sv.style.display === 'none') {
-                if (Android.hasPin() && !settingsUnlocked) {
-                  document.getElementById('pinOverlay').classList.add('show');
-                  Android.promptBiometric('settings');
-                  return;
-                }
-                sv.style.display = 'block';
-                mv.style.display = 'none';
-                lastRectKey = "off";
-                Android.setPreviewRect(false, 0, 0, 0, 0);
-              } else {
-                sv.style.display = 'none';
-                mv.style.display = 'block';
-              }
-            }
-
-            window.onBioResult = function(purpose, ok) {
-              if (ok && purpose === 'settings') {
-                settingsUnlocked = true;
-                document.getElementById('pinOverlay').classList.remove('show');
-                toggleSettings();
-              }
-            };
-
-            function checkPinNow() {
-              const val = document.getElementById('pinInput').value;
-              if (Android.verifyPin(val)) {
-                settingsUnlocked = true;
-                document.getElementById('pinOverlay').classList.remove('show');
-                document.getElementById('pinInput').value = '';
-                toggleSettings();
-              } else {
-                alert("PIN noto‘g‘ri!");
-              }
-            }
-
-            function saveNewPin() {
-              const p = document.getElementById('newPinInput').value.trim();
-              if (Android.setPin(p)) {
-                alert("PIN saqlandi!");
-                document.getElementById('newPinInput').value = '';
-              } else {
-                alert("Kamida 4 ta raqam kiriting");
-              }
-            }
-
-            function loadCfgToUi() {
-              let c = {};
-              try { c = JSON.parse(Android.loadSecureConfig() || "{}"); } catch(e) {}
-              document.getElementById('cfgMode').value = c.mode || 'phone';
-              document.getElementById('cfgLens').value = c.lens || 'back';
-              document.getElementById('cfgSens').value = c.sens || 28;
-              document.getElementById('cfgCool').value = c.cool || 10;
-              document.getElementById('cfgIpSec').value = c.ipSec || 3;
-              document.getElementById('cfgToken').value = c.token || '';
-              document.getElementById('cfgChatId').value = c.chatId || '';
-              document.getElementById('cfgZoom').checked = c.autoZoom !== false;
-              document.getElementById('cfgAutoVideo').checked = c.autoVideo !== false;
-              document.getElementById('cfgDoor').checked = c.doorCounter !== false;
-              document.getElementById('cfgAudio').checked = c.audioAlert !== false;
-              document.getElementById('cfgTamper').checked = c.tamperAlert !== false;
-              document.getElementById('cfgPower').checked = c.powerAlert !== false;
-              document.getElementById('cfgSiren').checked = !!c.siren;
-              document.getElementById('cfgSchedOn').checked = !!c.schedEnabled;
-              document.getElementById('cfgSchedStart').value = c.schedStart || '22:00';
-              document.getElementById('cfgSchedEnd').value = c.schedEnd || '07:00';
-              devices = Array.isArray(c.devices) ? c.devices : [];
-              renderDevices();
-              updateModeBadge();
-            }
-
-            function updateModeBadge() {
-              const m = document.getElementById('cfgMode').value;
-              document.getElementById('cntMode').innerText = m === 'ip' ? 'IP/NVR' : (m === 'both' ? 'DUAL' : 'TELEFON');
-            }
-
-            function collectCfgFromUi() {
-              return {
-                mode: document.getElementById('cfgMode').value,
-                lens: document.getElementById('cfgLens').value,
-                sens: parseInt(document.getElementById('cfgSens').value || '28', 10),
-                cool: parseInt(document.getElementById('cfgCool').value || '10', 10),
-                ipSec: parseInt(document.getElementById('cfgIpSec').value || '3', 10),
-                token: document.getElementById('cfgToken').value.trim(),
-                chatId: document.getElementById('cfgChatId').value.trim(),
-                autoZoom: document.getElementById('cfgZoom').checked,
-                autoVideo: document.getElementById('cfgAutoVideo').checked,
-                doorCounter: document.getElementById('cfgDoor').checked,
-                audioAlert: document.getElementById('cfgAudio').checked,
-                tamperAlert: document.getElementById('cfgTamper').checked,
-                powerAlert: document.getElementById('cfgPower').checked,
-                siren: document.getElementById('cfgSiren').checked,
-                schedEnabled: document.getElementById('cfgSchedOn').checked,
-                schedStart: document.getElementById('cfgSchedStart').value,
-                schedEnd: document.getElementById('cfgSchedEnd').value,
-                devices: devices
-              };
-            }
-
-            function saveAndCloseSettings() {
-              const cfg = collectCfgFromUi();
-              updateModeBadge();
-              const json = JSON.stringify(cfg);
-              Android.saveSecureConfig(json);
-              const st = JSON.parse(Android.getBgState() || "{}");
-              if (st.running) Android.startOrUpdateBgMonitor(json);
-              toggleSettings();
-            }
-
-            function startGuard() {
-              const cfg = collectCfgFromUi();
-              updateModeBadge();
-              const json = JSON.stringify(cfg);
-              document.getElementById('statusBadge').innerText = "● ISHGA TUSHMOQDA...";
-              document.getElementById('statusBadge').style.color = "#00f0ff";
-              Android.startOrUpdateBgMonitor(json);
-            }
-
-            function stopGuard() {
-              document.getElementById('statusBadge').innerText = "TO‘XTATILDI";
-              document.getElementById('statusBadge').style.color = "#f43f5e";
-              Android.stopBgMonitor();
-            }
-
-            function addDevicePrompt() {
-              devices.push({
-                name: "NVR / Kamera #" + (devices.length + 1),
-                type: "hikvision",
-                ip: "192.168.1.64",
-                port: "80",
-                user: "admin",
-                pass: "",
-                channels: "1,2",
-                customUrl: ""
-              });
-              renderDevices();
-            }
-
-            function removeDevice(idx) {
-              devices.splice(idx, 1);
-              renderDevices();
-            }
-
-            function renderDevices() {
-              const box = document.getElementById('devicesList');
-              box.innerHTML = '';
-              devices.forEach((d, i) => {
-                const div = document.createElement('div');
-                div.className = 'dev-card';
-                div.innerHTML = `
-                  <div class="dev-head">
-                    <span>#${i+1} ${d.name}</span>
-                    <button style="background:#f43f5e;color:#fff;border:none;border-radius:8px;padding:5px 9px;font-size:11px;" onclick="removeDevice(${i})">O‘chirish</button>
-                  </div>
-                  <label>Nomi:</label>
-                  <input value="${d.name}" onchange="devices[${i}].name=this.value" />
-                  <label>Turi:</label>
-                  <select onchange="devices[${i}].type=this.value;renderDevices();">
-                    <option value="hikvision" ${d.type==='hikvision'?'selected':''}>Hikvision NVR / IP</option>
-                    <option value="dahua" ${d.type==='dahua'?'selected':''}>Dahua NVR / IP</option>
-                    <option value="url" ${d.type==='url'?'selected':''}>To‘g‘ridan-to‘g‘ri Snapshot URL</option>
-                  </select>
-                  ${d.type === 'url' ? `
-                    <label>Snapshot URL:</label>
-                    <input value="${d.customUrl||''}" onchange="devices[${i}].customUrl=this.value" placeholder="http://.../snapshot.jpg" />
-                  ` : `
-                    <label>IP manzil:</label>
-                    <input value="${d.ip||''}" onchange="devices[${i}].ip=this.value" />
-                    <label>HTTP Port:</label>
-                    <input value="${d.port||'80'}" onchange="devices[${i}].port=this.value" />
-                    <label>Kanallar (vergul bilan, masalan: 1,2,3,4):</label>
-                    <input value="${d.channels||'1'}" onchange="devices[${i}].channels=this.value" />
-                  `}
-                  <div class="row">
-                    <div style="flex:1;"><label>Login:</label><input value="${d.user||''}" onchange="devices[${i}].user=this.value" /></div>
-                    <div style="flex:1;"><label>Parol:</label><input type="password" value="${d.pass||''}" onchange="devices[${i}].pass=this.value" /></div>
-                  </div>
-                `;
-                box.appendChild(div);
-              });
-            }
-
-            function autoDetectChat() {
-              const t = document.getElementById('cfgToken').value.trim();
-              if (!t) { alert("Avval Bot Token kiriting!"); return; }
-              Android.detectChatId(t);
-            }
-
-            window.onChatIdDetected = function(id, user) {
-              if (id) {
-                document.getElementById('cfgChatId').value = id;
-                alert("Chat ID topildi: " + id + " (" + user + ")");
-              } else {
-                alert("Topilmadi. Telegramda botingizga /start yuborib qayta bosing.");
-              }
-            };
-
-            function enrollFaceNow() {
-              const name = document.getElementById('faceNameInput').value.trim();
-              if (!name) { alert("Ism kiriting!"); return; }
-              Android.enrollFaceFromCurrentFrame(name);
-            }
-
-            window.onFaceEnrolled = function(ok, msg) {
-              alert(msg);
-              if (ok) {
-                document.getElementById('faceNameInput').value = '';
-                refreshFaces();
-              }
-            };
-
-            function refreshFaces() {
-              const list = JSON.parse(Android.getKnownFaces() || "[]");
-              const box = document.getElementById('facesList');
-              box.innerHTML = '';
-              list.forEach(f => {
-                const row = document.createElement('div');
-                row.className = 'chk-row';
-                row.innerHTML = `<span>👤 ${f.name}</span><button style="background:#f43f5e;color:#fff;border:none;border-radius:8px;padding:4px 8px;" onclick="Android.removeKnownFace('${f.id}');refreshFaces();">O‘chirish</button>`;
-                box.appendChild(row);
-              });
-            }
-
-            function openZoom(b64, title) {
-              document.getElementById('zoomImg').src = "data:image/jpeg;base64," + b64;
-              document.getElementById('zoomTitle').innerText = title;
-              document.getElementById('zoomModal').classList.add('show');
-            }
-
-            function syncUiLoop() {
-              const st = JSON.parse(Android.getBgState() || "{}");
-              const badge = document.getElementById('statusBadge');
-              const dot = document.getElementById('liveDot');
-              if (st.running) {
-                badge.innerText = "● JONLI FAOL";
-                badge.style.color = "#10b981";
-                dot.classList.add('active');
-              } else {
-                badge.innerText = "KUTISHDA";
-                badge.style.color = "#94a3b8";
-                dot.classList.remove('active');
-              }
-              document.getElementById('cntIn').innerText = st.enter || 0;
-              document.getElementById('cntOut').innerText = st.exit || 0;
-
-              const mv = document.getElementById('mainView');
-              if (mv.style.display !== 'none' && st.running) {
-                const r = document.getElementById('previewAnchor').getBoundingClientRect();
-                const rk = Math.round(r.left)+"_"+Math.round(r.top)+"_"+Math.round(r.width)+"_"+Math.round(r.height);
-                if (rk !== lastRectKey) {
-                  lastRectKey = rk;
-                  Android.setPreviewRect(true, r.left, r.top, r.width, r.height);
-                }
-              } else if (lastRectKey !== "off") {
-                lastRectKey = "off";
-                Android.setPreviewRect(false, 0, 0, 0, 0);
-              }
-
-              const gridRaw = Android.getIpGridFrames() || "[]";
-              if (gridRaw !== lastGridRaw) {
-                lastGridRaw = gridRaw;
-                const frames = JSON.parse(gridRaw);
-                document.getElementById('ipCountLabel').innerText = frames.length + " kanal";
-                const grid = document.getElementById('ipGrid');
-                grid.innerHTML = '';
-                frames.forEach(item => {
-                  const cell = document.createElement('div');
-                  cell.className = 'grid-item';
-                  if (item.b64) {
-                    cell.innerHTML = `<img src="data:image/jpeg;base64,${item.b64}" /><div class="grid-label">🟢 ${item.title}</div>`;
-                    cell.onclick = () => openZoom(item.b64, item.title);
-                  } else {
-                    cell.innerHTML = `<div style="padding:40px 8px;text-align:center;font-size:11px;color:#64748b;">Ulanmoqda...</div><div class="grid-label">⚪ ${item.title}</div>`;
-                  }
-                  grid.appendChild(cell);
-                });
-              }
-
-              const evRaw = Android.getNativeEvents() || "[]";
-              if (evRaw !== lastEventsRaw) {
-                lastEventsRaw = evRaw;
-                const evs = JSON.parse(evRaw);
-                const eBox = document.getElementById('eventsBox');
-                eBox.innerHTML = evs.slice(0, 15).map(e => `<div class="log-item"><b style="color:#38bdf8;">[${e.time}]</b> ${e.text}</div>`).join('');
-              }
-            }
-
-            window.onload = initApp;
-          </script>
-          </body>
-          </html>
-          EOF
-
-          # ==========================================
-          # 2-MODUL: ADMIN ILOVASI (:admin)
-          # ==========================================
-          cat <<'EOF' > admin/build.gradle.kts
-          plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
-          }
-
-          android {
-              namespace = "uz.qoriqlash.admin"
-              compileSdk = 34
-
-              defaultConfig {
-                  applicationId = "uz.qoriqlash.admin"
-                  minSdk = 24
-                  targetSdk = 34
-                  versionCode = 10
-                  versionName = "4.1-zero-anr"
-              }
-
-              buildTypes {
-                  release {
-                      isMinifyEnabled = false
-                  }
-              }
-
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
-          }
-
-          dependencies {
-              implementation("androidx.core:core-ktx:1.13.1")
-              implementation("androidx.security:security-crypto:1.1.0-alpha06")
-              implementation("com.squareup.okhttp3:okhttp:4.12.0")
-          }
-          EOF
-
-          cat <<'EOF' > admin/src/main/res/values/strings.xml
-          <resources>
-              <string name="app_name">Qo‘riqlash Admin</string>
-          </resources>
-          EOF
-
-          cat <<'EOF' > admin/src/main/AndroidManifest.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-              <application
-                  android:allowBackup="false"
-                  android:label="Qo‘riqlash Admin"
-                  android:theme="@android:style/Theme.Material.NoActionBar">
-                  <activity
-                      android:name=".AdminActivity"
-                      android:exported="true">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-              </application>
-          </manifest>
-          EOF
-
-          cat <<'EOF' > admin/src/main/java/uz/qoriqlash/admin/AdminActivity.kt
-          package uz.qoriqlash.admin
-
-          import android.app.Activity
-          import android.app.AlertDialog
-          import android.content.Context
-          import android.content.SharedPreferences
-          import android.graphics.Color
-          import android.graphics.Typeface
-          import android.graphics.drawable.GradientDrawable
-          import android.os.Bundle
-          import android.text.InputType
-          import android.util.Base64
-          import android.view.Gravity
-          import android.view.View
-          import android.widget.Button
-          import android.widget.EditText
-          import android.widget.LinearLayout
-          import android.widget.ScrollView
-          import android.widget.Switch
-          import android.widget.TextView
-          import android.widget.Toast
-          import androidx.security.crypto.EncryptedSharedPreferences
-          import androidx.security.crypto.MasterKey
-          import okhttp3.MediaType.Companion.toMediaType
-          import okhttp3.OkHttpClient
-          import okhttp3.Request
-          import okhttp3.RequestBody.Companion.toRequestBody
-          import org.json.JSONArray
-          import org.json.JSONObject
-          import java.text.SimpleDateFormat
-          import java.util.Calendar
-          import java.util.Locale
-          import java.util.concurrent.TimeUnit
-
-          class AdminActivity : Activity() {
-
-              companion object {
-                  private const val USERS_API_URL = "https://api.github.com/repos/aaaa1111bbbbv-dot/mukamal/contents/users.json"
-                  private const val EMBEDDED_ADMIN_TOKEN = "__GH_SECRET_PLACEHOLDER__"
-              }
-
-              @Volatile private var cachedVault: SharedPreferences? = null
-              private lateinit var fastPrefs: SharedPreferences
-              private lateinit var tokenInputBox: LinearLayout
-              private lateinit var tokenLockedBox: LinearLayout
-              private lateinit var tokenInput: EditText
-              private lateinit var statsText: TextView
-              private lateinit var statusText: TextView
-              private lateinit var usersContainer: LinearLayout
-
-              private var usersSha = ""
-              private var usersArray = JSONArray()
-
-              private val client = OkHttpClient.Builder()
-                  .connectTimeout(8, TimeUnit.SECONDS)
-                  .readTimeout(12, TimeUnit.SECONDS)
-                  .build()
-
-              private fun getVault(): SharedPreferences {
-                  cachedVault?.let { return it }
-                  synchronized(this) {
-                      cachedVault?.let { return it }
-                      val v = try {
-                          val masterKey = MasterKey.Builder(applicationContext)
-                              .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                              .build()
-                          EncryptedSharedPreferences.create(
-                              applicationContext,
-                              "qoriqlash_admin_vault_v4",
-                              masterKey,
-                              EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                              EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                          )
-                      } catch (_: Exception) {
-                          fastPrefs
-                      }
-                      cachedVault = v
-                      return v
-                  }
-              }
-
-              private fun readSavedTokenBg(): String {
-                  val saved = getVault().getString("gh_token_enc", "") ?: ""
-                  if (saved.isNotEmpty()) return saved
-                  if (EMBEDDED_ADMIN_TOKEN.startsWith("ghp_") || EMBEDDED_ADMIN_TOKEN.startsWith("github_pat_")) {
-                      getVault().edit().putString("gh_token_enc", EMBEDDED_ADMIN_TOKEN).apply()
-                      fastPrefs.edit().putBoolean("has_tok", true).apply()
-                      return EMBEDDED_ADMIN_TOKEN
-                  }
-                  return ""
-              }
-
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  fastPrefs = getSharedPreferences("QoriqlashAdminFast_v4", Context.MODE_PRIVATE)
-
-                  val scroll = ScrollView(this).apply {
-                      setBackgroundColor(Color.parseColor("#030712"))
-                  }
-                  val layout = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      setPadding(40, 56, 40, 80)
-                  }
-                  scroll.addView(layout)
-
-                  val title = TextView(this).apply {
-                      text = "🛡 QO‘RIQLASH ADMIN · COMMAND"
-                      setTextColor(Color.parseColor("#00F0FF"))
-                      textSize = 20f
-                      setTypeface(null, Typeface.BOLD)
-                      gravity = Gravity.CENTER
-                  }
-                  layout.addView(title)
-
-                  statusText = TextView(this).apply {
-                      text = "Holat: Yuklanmoqda..."
-                      setTextColor(Color.parseColor("#94A3B8"))
-                      setPadding(0, 12, 0, 14)
-                      gravity = Gravity.CENTER
-                  }
-                  layout.addView(statusText)
-
-                  val statsBg = GradientDrawable().apply {
-                      setColor(Color.parseColor("#0F172A"))
-                      cornerRadius = 24f
-                      setStroke(2, Color.parseColor("#1E293B"))
-                  }
-                  statsText = TextView(this).apply {
-                      text = "Jami: 0 ta  |  Faol: 0 ta  |  Onlayn: 0 ta"
-                      setTextColor(Color.parseColor("#10B981"))
-                      textSize = 14f
-                      setTypeface(null, Typeface.BOLD)
-                      gravity = Gravity.CENTER
-                      background = statsBg
-                      setPadding(24, 24, 24, 24)
-                  }
-                  layout.addView(statsText)
-
-                  val lockBg = GradientDrawable().apply {
-                      setColor(Color.parseColor("#064E3B"))
-                      cornerRadius = 20f
-                      setStroke(2, Color.parseColor("#10B981"))
-                  }
-                  tokenLockedBox = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL
-                      background = lockBg
-                      setPadding(24, 18, 24, 18)
-                      gravity = Gravity.CENTER_VERTICAL
-                      val lp = LinearLayout.LayoutParams(
-                          LinearLayout.LayoutParams.MATCH_PARENT,
-                          LinearLayout.LayoutParams.WRAP_CONTENT
-                      )
-                      lp.setMargins(0, 20, 0, 0)
-                      layoutParams = lp
-
-                      val lockLabel = TextView(this@AdminActivity).apply {
-                          text = "🔒 Token AES-256 bilan shifrlangan"
-                          setTextColor(Color.parseColor("#6EE7B7"))
-                          textSize = 13f
-                          setTypeface(null, Typeface.BOLD)
-                          layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                      }
-                      addView(lockLabel)
-
-                      val changeBtn = Button(this@AdminActivity).apply {
-                          text = "Almashtirish"
-                          textSize = 11f
-                          setBackgroundColor(Color.parseColor("#0F172A"))
-                          setTextColor(Color.parseColor("#38BDF8"))
-                          setOnClickListener {
-                              tokenLockedBox.visibility = View.GONE
-                              tokenInputBox.visibility = View.VISIBLE
-                          }
-                      }
-                      addView(changeBtn)
-                  }
-                  layout.addView(tokenLockedBox)
-
-                  tokenInputBox = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                  }
-                  tokenInputBox.addView(makeLabel("GitHub Token (bir marta kiritiladi va shifrlanadi):"))
-                  tokenInput = makeInput("ghp_xxxxxxxxxxxxxxxxxxxx").apply {
-                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                  }
-                  tokenInputBox.addView(tokenInput)
-
-                  val saveTokBtn = Button(this).apply {
-                      text = "🔐 SHIFRLAB SAQLASH"
-                      setBackgroundColor(Color.parseColor("#10B981"))
-                      setTextColor(Color.WHITE)
-                      val lp = LinearLayout.LayoutParams(
-                          LinearLayout.LayoutParams.MATCH_PARENT,
-                          LinearLayout.LayoutParams.WRAP_CONTENT
-                      )
-                      lp.setMargins(0, 14, 0, 0)
-                      layoutParams = lp
-                      setOnClickListener {
-                          val t = tokenInput.text.toString().trim()
-                          if (t.isNotEmpty()) {
-                              tokenInput.setText("")
-                              fastPrefs.edit().putBoolean("has_tok", true).apply()
-                              updateTokenVisibility(true)
-                              Thread {
-                                  getVault().edit().putString("gh_token_enc", t).apply()
-                                  fetchUsers()
-                              }.start()
-                          }
-                      }
-                  }
-                  tokenInputBox.addView(saveTokBtn)
-                  layout.addView(tokenInputBox)
-
-                  val refreshBtn = Button(this).apply {
-                      text = "🔄 MIJOZLAR RO‘YXATINI YANGILASH"
-                      setBackgroundColor(Color.parseColor("#0284C7"))
-                      setTextColor(Color.WHITE)
-                      val lp = LinearLayout.LayoutParams(
-                          LinearLayout.LayoutParams.MATCH_PARENT,
-                          LinearLayout.LayoutParams.WRAP_CONTENT
-                      )
-                      lp.setMargins(0, 22, 0, 24)
-                      layoutParams = lp
-                      setOnClickListener { fetchUsers() }
-                  }
-                  layout.addView(refreshBtn)
-
-                  val listHeader = TextView(this).apply {
-                      text = "📋 RO‘YXATDAN O‘TGAN MIJOZLAR:"
-                      setTextColor(Color.parseColor("#00F0FF"))
-                      textSize = 14f
-                      setTypeface(null, Typeface.BOLD)
-                      setPadding(0, 6, 0, 16)
-                  }
-                  layout.addView(listHeader)
-
-                  usersContainer = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                  }
-                  layout.addView(usersContainer)
-
-                  setContentView(scroll)
-                  val quickHas = fastPrefs.getBoolean("has_tok", false) ||
-                      EMBEDDED_ADMIN_TOKEN.startsWith("ghp_") ||
-                      EMBEDDED_ADMIN_TOKEN.startsWith("github_pat_")
-                  updateTokenVisibility(quickHas)
-                  fetchUsers()
-              }
-
-              private fun updateTokenVisibility(hasToken: Boolean) {
-                  tokenLockedBox.visibility = if (hasToken) View.VISIBLE else View.GONE
-                  tokenInputBox.visibility = if (hasToken) View.GONE else View.VISIBLE
-              }
-
-              private fun makeLabel(t: String): TextView = TextView(this).apply {
-                  text = t
-                  setTextColor(Color.LTGRAY)
-                  setPadding(0, 16, 0, 6)
-              }
-
-              private fun makeInput(hintText: String): EditText = EditText(this).apply {
-                  hint = hintText
-                  setHintTextColor(Color.GRAY)
-                  setTextColor(Color.WHITE)
-                  setBackgroundColor(Color.parseColor("#111827"))
-                  setPadding(24, 24, 24, 24)
-              }
-
-              private fun fetchUsers() {
-                  runOnUiThread { statusText.text = "Mijozlar yuklanmoqda..." }
-                  Thread {
-                      val tok = readSavedTokenBg()
-                      if (tok.isEmpty()) {
-                          runOnUiThread {
-                              updateTokenVisibility(false)
-                              statusText.text = "Avval GitHub Token (ghp_...) ni bir marta kiriting"
-                          }
-                          return@Thread
-                      }
-                      runOnUiThread { updateTokenVisibility(true) }
-
-                      try {
-                          val req = Request.Builder()
-                              .url("$USERS_API_URL?t=${System.currentTimeMillis()}")
-                              .header("Authorization", "token $tok")
-                              .header("Accept", "application/vnd.github.v3+json")
-                              .build()
-
-                          client.newCall(req).execute().use { resp ->
-                              if (resp.isSuccessful) {
-                                  val body = JSONObject(resp.body?.string() ?: "{}")
-                                  usersSha = body.optString("sha", "")
-                                  val b64 = body.optString("content", "").replace("\n", "")
-                                  val decoded = String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
-                                  val root = JSONObject(decoded)
-                                  usersArray = root.optJSONArray("users") ?: JSONArray()
-
-                                  runOnUiThread {
-                                      statusText.text = "✅ Baza yangilandi (Shifrlangan ulanish)"
-                                      statusText.setTextColor(Color.parseColor("#10B981"))
-                                      renderUsersList()
-                                  }
-                              } else {
-                                  val code = resp.code
-                                  runOnUiThread {
-                                      statusText.text = "❌ Xatolik ($code): Token yoki users.json faylini tekshiring"
-                                      statusText.setTextColor(Color.parseColor("#F43F5E"))
-                                  }
-                              }
-                          }
-                      } catch (e: Exception) {
-                          runOnUiThread {
-                              statusText.text = "❌ Tarmoq xatosi: ${e.message}"
-                              statusText.setTextColor(Color.parseColor("#F43F5E"))
-                          }
-                      }
-                  }.start()
-              }
-
-              private fun renderUsersList() {
-                  usersContainer.removeAllViews()
-                  val total = usersArray.length()
-                  var activeCount = 0
-                  var runningNowCount = 0
-
-                  for (i in 0 until total) {
-                      val u = usersArray.optJSONObject(i) ?: continue
-                      val isAct = u.optBoolean("active", true)
-                      val isMon = u.optBoolean("monitoring", false)
-                      if (isAct) activeCount++
-                      if (isAct && isMon) runningNowCount++
-
-                      usersContainer.addView(buildUserCard(i, u))
-                  }
-
-                  statsText.text = "Jami: $total ta  |  Faol: $activeCount ta  |  Onlayn: $runningNowCount ta"
-                  if (total == 0) {
-                      val empty = TextView(this).apply {
-                          text = "Hali birorta mijoz ilovaga kirmagan."
-                          setTextColor(Color.GRAY)
-                          setPadding(16, 24, 16, 24)
-                      }
-                      usersContainer.addView(empty)
-                  }
-              }
-
-              private fun buildUserCard(index: Int, u: JSONObject): LinearLayout {
-                  val isAct = u.optBoolean("active", true)
-                  val isMon = u.optBoolean("monitoring", false)
-                  val name = u.optString("name", "Nomsiz mijoz")
-                  val phone = u.optString("phone", "")
-                  val id = u.optString("id", "")
-                  val model = u.optString("model", "")
-                  val regAt = u.optString("registeredAt", "-")
-                  val lastSeen = u.optString("lastSeen", "-")
-                  val expiresAt = u.optString("expiresAt", "Cheksiz")
-
-                  val cardBg = GradientDrawable().apply {
-                      setColor(Color.parseColor("#0F172A"))
-                      cornerRadius = 26f
-                      setStroke(3, if (isAct) Color.parseColor("#00F0FF") else Color.parseColor("#F43F5E"))
-                  }
-
-                  return LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      background = cardBg
-                      setPadding(32, 28, 32, 28)
-                      val lp = LinearLayout.LayoutParams(
-                          LinearLayout.LayoutParams.MATCH_PARENT,
-                          LinearLayout.LayoutParams.WRAP_CONTENT
-                      )
-                      lp.setMargins(0, 0, 0, 24)
-                      layoutParams = lp
-
-                      val head = TextView(this@AdminActivity).apply {
-                          text = "${index + 1}. $name ${if (phone.isNotEmpty()) "($phone)" else ""}"
-                          setTextColor(Color.WHITE)
-                          textSize = 17f
-                          setTypeface(null, Typeface.BOLD)
-                      }
-                      addView(head)
-
-                      val info = TextView(this@AdminActivity).apply {
-                          text = buildString {
-                              appendLine("🆔 ID: $id  |  📱 $model")
-                              appendLine("📅 Ro‘yxatdan o‘tgan: $regAt")
-                              appendLine("🕒 Oxirgi faollik: $lastSeen")
-                              appendLine("⏳ Obuna muddati: $expiresAt")
-                              append("📡 Nazorat holati: ${if (isMon) "ISHLAYAPTI 🟢" else "KUTISHDA ⚪"}")
-                          }
-                          setTextColor(Color.parseColor("#CBD5E1"))
-                          textSize = 13f
-                          setPadding(0, 12, 0, 16)
-                      }
-                      addView(info)
-
-                      val sw = Switch(this@AdminActivity).apply {
-                          text = if (isAct) "✅ Obuna FAOL (Faqat shu mijoz uchun)" else "⛔ Obuna O‘CHIRILGAN (Bloklangan)"
-                          setTextColor(if (isAct) Color.parseColor("#10B981") else Color.parseColor("#F43F5E"))
-                          textSize = 14f
-                          isChecked = isAct
-                          setOnCheckedChangeListener { _, checked ->
-                              u.put("active", checked)
-                              if (!checked) {
-                                  u.put("note", "To‘lov muddati tugagani sababli obunangiz to‘xtatildi.")
-                              } else {
-                                  u.put("note", "")
-                              }
-                              saveUsersToGitHub("Mijoz holati o‘zgartirildi: $name -> $checked")
-                          }
-                      }
-                      addView(sw)
-
-                      val btnRow = LinearLayout(this@AdminActivity).apply {
-                          orientation = LinearLayout.HORIZONTAL
-                          setPadding(0, 16, 0, 0)
-                      }
-
-                      val plus30Btn = Button(this@AdminActivity).apply {
-                          text = "➕ +30 kun uzaytirish"
-                          setBackgroundColor(Color.parseColor("#10B981"))
-                          setTextColor(Color.WHITE)
-                          textSize = 12f
-                          layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                              setMargins(0, 0, 12, 0)
-                          }
-                          setOnClickListener {
-                              val nextExp = extendDaysFromNow(30)
-                              u.put("expiresAt", nextExp)
-                              u.put("active", true)
-                              u.put("note", "")
-                              saveUsersToGitHub("$name obunasi $nextExp gacha uzaytirildi")
-                          }
-                      }
-                      btnRow.addView(plus30Btn)
-
-                      val editDateBtn = Button(this@AdminActivity).apply {
-                          text = "📅 Muddat / Xabar"
-                          setBackgroundColor(Color.parseColor("#334155"))
-                          setTextColor(Color.WHITE)
-                          textSize = 12f
-                          layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                          setOnClickListener { showEditUserDialog(u) }
-                      }
-                      btnRow.addView(editDateBtn)
-
-                      addView(btnRow)
-                  }
-              }
-
-              private fun extendDaysFromNow(days: Int): String {
-                  val cal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, days) }
-                  return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
-              }
-
-              private fun showEditUserDialog(u: JSONObject) {
-                  val box = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      setPadding(40, 24, 40, 10)
-                  }
-                  val dateIn = EditText(this).apply {
-                      hint = "Tugash sanasi (YYYY-MM-DD)"
-                      setText(u.optString("expiresAt", extendDaysFromNow(30)))
-                  }
-                  val noteIn = EditText(this).apply {
-                      hint = "Shaxsiy ogohlantirish xabari"
-                      setText(u.optString("note", ""))
-                  }
-                  box.addView(dateIn)
-                  box.addView(noteIn)
-
-                  AlertDialog.Builder(this)
-                      .setTitle(u.optString("name", "Mijoz sozlamasi"))
-                      .setView(box)
-                      .setPositiveButton("Saqlash") { _, _ ->
-                          u.put("expiresAt", dateIn.text.toString().trim())
-                          u.put("note", noteIn.text.toString().trim())
-                          saveUsersToGitHub("Mijoz muddati yangilandi")
-                      }
-                      .setNegativeButton("Bekor qilish", null)
-                      .show()
-              }
-
-              private fun saveUsersToGitHub(commitMsg: String) {
-                  statusText.text = "Saqlanmoqda..."
-                  Thread {
-                      val tok = readSavedTokenBg()
-                      if (tok.isEmpty()) return@Thread
-                      try {
-                          val root = JSONObject().apply { put("users", usersArray) }
-                          val encoded = Base64.encodeToString(root.toString(2).toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                          val body = JSONObject().apply {
-                              put("message", commitMsg)
-                              put("content", encoded)
-                              put("sha", usersSha)
-                          }
-                          val req = Request.Builder()
-                              .url(USERS_API_URL)
-                              .header("Authorization", "token $tok")
-                              .header("Accept", "application/vnd.github.v3+json")
-                              .put(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                              .build()
-
-                          client.newCall(req).execute().use { resp ->
-                              if (resp.isSuccessful) {
-                                  val res = JSONObject(resp.body?.string() ?: "{}")
-                                  usersSha = res.optJSONObject("content")?.optString("sha", usersSha) ?: usersSha
-                                  runOnUiThread {
-                                      statusText.text = "✅ $commitMsg"
-                                      statusText.setTextColor(Color.parseColor("#10B981"))
-                                      renderUsersList()
-                                  }
-                              } else {
-                                  runOnUiThread {
-                                      Toast.makeText(this, "Saqlashda xatolik: ${resp.code}", Toast.LENGTH_SHORT).show()
-                                      fetchUsers()
-                                  }
-                              }
-                          }
-                      } catch (e: Exception) {
-                          runOnUiThread {
-                              statusText.text = "❌ Xatolik: ${e.message}"
-                          }
-                      }
-                  }.start()
-              }
-          }
-          EOF
-
-          if [ -n "$GH_SECRET_TOKEN" ]; then
-            sed -i "s|__GH_SECRET_PLACEHOLDER__|$GH_SECRET_TOKEN|g" admin/src/main/java/uz/qoriqlash/admin/AdminActivity.kt
-          fi
-
-      - name: Build both APKs (Client + Admin)
-        run: |
-          gradle assembleDebug --no-daemon --stacktrace
-
-      - name: Upload Client & Admin APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: Qoriqlash-Mukamal-APKs
-          path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            admin/build/outputs/apk/debug/admin-debug.apk
-          if-no-files-found: error
+                  // Jonli kamera oynasi WebView ustidagi ajratilgan ramkada aniq ko'rinishi uchun
+                  previewView = PreviewView(this).apply {
+                      implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                      scaleType = PreviewView.ScaleType.FILL_CENTER
+                      visibility = View.
