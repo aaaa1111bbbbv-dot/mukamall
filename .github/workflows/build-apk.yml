@@ -92,8 +92,8 @@ jobs:
                   applicationId = "uz.qoriqlash.app"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 16
-                  versionName = "4.0-cyber-pro"
+                  versionCode = 17
+                  versionName = "4.1-zero-anr"
               }
 
               buildTypes {
@@ -222,24 +222,56 @@ jobs:
           import java.util.UUID
 
           object SecureStore {
-              private const val PREF_NAME = "qoriqlash_vault_v4"
+              private const val PREF_NAME = "qoriqlash_fast_v4"
+              private const val VAULT_NAME = "qoriqlash_secret_vault_v4"
               private const val CREATOR_CODE_HASH = "e69b7525e846a20b5663e0d3f7510f72b3e302212650d1c0c563a3560d481b39"
 
-              private fun prefs(ctx: Context): SharedPreferences {
-                  return try {
-                      val masterKey = MasterKey.Builder(ctx.applicationContext)
-                          .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                          .build()
-                      EncryptedSharedPreferences.create(
-                          ctx.applicationContext,
-                          PREF_NAME,
-                          masterKey,
-                          EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                          EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                      )
-                  } catch (_: Exception) {
-                      ctx.applicationContext.getSharedPreferences(PREF_NAME + "_fb", Context.MODE_PRIVATE)
+              @Volatile private var fastPrefsCache: SharedPreferences? = null
+              @Volatile private var vaultPrefsCache: SharedPreferences? = null
+              @Volatile private var cachedConfigObj: JSONObject? = null
+
+              private fun fastPrefs(ctx: Context): SharedPreferences {
+                  fastPrefsCache?.let { return it }
+                  synchronized(this) {
+                      fastPrefsCache?.let { return it }
+                      val p = ctx.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                      fastPrefsCache = p
+                      return p
                   }
+              }
+
+              private fun vaultPrefs(ctx: Context): SharedPreferences {
+                  vaultPrefsCache?.let { return it }
+                  synchronized(this) {
+                      vaultPrefsCache?.let { return it }
+                      val p = try {
+                          val masterKey = MasterKey.Builder(ctx.applicationContext)
+                              .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                              .build()
+                          EncryptedSharedPreferences.create(
+                              ctx.applicationContext,
+                              VAULT_NAME,
+                              masterKey,
+                              EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                              EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                          )
+                      } catch (_: Exception) {
+                          fastPrefs(ctx)
+                      }
+                      vaultPrefsCache = p
+                      return p
+                  }
+              }
+
+              fun warmupAsync(ctx: Context) {
+                  val appCtx = ctx.applicationContext
+                  Thread {
+                      try {
+                          fastPrefs(appCtx)
+                          vaultPrefs(appCtx)
+                      } catch (_: Exception) {
+                      }
+                  }.start()
               }
 
               private fun sha256(text: String): String {
@@ -249,7 +281,7 @@ jobs:
 
               @SuppressLint("HardwareIds")
               fun getDeviceId(ctx: Context): String {
-                  val p = prefs(ctx)
+                  val p = fastPrefs(ctx)
                   var id = p.getString("unique_dev_id", "") ?: ""
                   if (id.isEmpty()) {
                       val androidId = try {
@@ -272,25 +304,26 @@ jobs:
               }
 
               fun setClientProfile(ctx: Context, name: String, phone: String) {
-                  prefs(ctx).edit()
+                  fastPrefs(ctx).edit()
                       .putString("client_name", name.trim())
                       .putString("client_phone", phone.trim())
                       .apply()
               }
 
-              fun getClientName(ctx: Context): String = prefs(ctx).getString("client_name", "") ?: ""
-              fun getClientPhone(ctx: Context): String = prefs(ctx).getString("client_phone", "") ?: ""
+              fun getClientName(ctx: Context): String = fastPrefs(ctx).getString("client_name", "") ?: ""
+              fun getClientPhone(ctx: Context): String = fastPrefs(ctx).getString("client_phone", "") ?: ""
 
-              // Token faqat bir marta yoziladi va AES-256 bilan shifrlanadi
+              // GitHub Token AES-256-GCM Vault ichida bir marta shifrlab saqlanadi
               fun setCustomToken(ctx: Context, token: String) {
                   val clean = token.trim()
                   if (clean.isNotEmpty()) {
-                      prefs(ctx).edit().putString("custom_gh_token_enc", clean).apply()
+                      fastPrefs(ctx).edit().putBoolean("has_enc_token", true).apply()
+                      vaultPrefs(ctx).edit().putString("custom_gh_token_enc", clean).apply()
                   }
               }
 
-              fun getCustomToken(ctx: Context): String = prefs(ctx).getString("custom_gh_token_enc", "") ?: ""
-              fun hasCustomToken(ctx: Context): Boolean = getCustomToken(ctx).isNotEmpty()
+              fun getCustomToken(ctx: Context): String = vaultPrefs(ctx).getString("custom_gh_token_enc", "") ?: ""
+              fun hasCustomTokenFast(ctx: Context): Boolean = fastPrefs(ctx).getBoolean("has_enc_token", false)
 
               fun setRemoteControlState(
                   ctx: Context,
@@ -299,7 +332,7 @@ jobs:
                   message: String,
                   expiresAt: String
               ) {
-                  prefs(ctx).edit()
+                  fastPrefs(ctx).edit()
                       .putBoolean("remote_active", active)
                       .putString("remote_code", remoteCode.trim())
                       .putString("remote_msg", message.trim())
@@ -307,13 +340,13 @@ jobs:
                       .apply()
               }
 
-              fun isRemoteActive(ctx: Context): Boolean = prefs(ctx).getBoolean("remote_active", true)
-              fun getRemoteMessage(ctx: Context): String = prefs(ctx).getString("remote_msg", "") ?: ""
-              fun getRemoteCode(ctx: Context): String = prefs(ctx).getString("remote_code", "") ?: ""
-              fun getRemoteExpires(ctx: Context): String = prefs(ctx).getString("remote_expires", "") ?: ""
+              fun isRemoteActive(ctx: Context): Boolean = fastPrefs(ctx).getBoolean("remote_active", true)
+              fun getRemoteMessage(ctx: Context): String = fastPrefs(ctx).getString("remote_msg", "") ?: ""
+              fun getRemoteCode(ctx: Context): String = fastPrefs(ctx).getString("remote_code", "") ?: ""
+              fun getRemoteExpires(ctx: Context): String = fastPrefs(ctx).getString("remote_expires", "") ?: ""
 
               fun isCreatorActivated(ctx: Context): Boolean {
-                  return prefs(ctx).getBoolean("creator_activated_once", false)
+                  return fastPrefs(ctx).getBoolean("creator_activated_once", false)
               }
 
               fun verifyAndActivateCreatorCode(ctx: Context, rawInput: String): Boolean {
@@ -324,43 +357,51 @@ jobs:
                            normalized == "alisa" ||
                            sha256(normalized) == CREATOR_CODE_HASH
                   if (ok) {
-                      prefs(ctx).edit().putBoolean("creator_activated_once", true).apply()
+                      fastPrefs(ctx).edit().putBoolean("creator_activated_once", true).apply()
                       return true
                   }
                   return false
               }
 
               fun saveConfigJson(ctx: Context, json: String) {
-                  prefs(ctx).edit().putString("cfg_json", json).apply()
-              }
-
-              fun loadConfigJson(ctx: Context): String {
-                  return prefs(ctx).getString("cfg_json", "") ?: ""
-              }
-
-              fun loadConfig(ctx: Context): JSONObject {
-                  val raw = loadConfigJson(ctx)
-                  return try {
-                      if (raw.isNotEmpty()) JSONObject(raw) else JSONObject()
+                  fastPrefs(ctx).edit().putString("cfg_json", json).apply()
+                  cachedConfigObj = try {
+                      if (json.isNotEmpty()) JSONObject(json) else JSONObject()
                   } catch (_: Exception) {
                       JSONObject()
                   }
               }
 
+              fun loadConfigJson(ctx: Context): String {
+                  return fastPrefs(ctx).getString("cfg_json", "") ?: ""
+              }
+
+              fun loadConfig(ctx: Context): JSONObject {
+                  cachedConfigObj?.let { return it }
+                  val raw = loadConfigJson(ctx)
+                  val parsed = try {
+                      if (raw.isNotEmpty()) JSONObject(raw) else JSONObject()
+                  } catch (_: Exception) {
+                      JSONObject()
+                  }
+                  cachedConfigObj = parsed
+                  return parsed
+              }
+
               fun setWasRunning(ctx: Context, running: Boolean) {
-                  prefs(ctx).edit().putBoolean("was_running", running).apply()
+                  fastPrefs(ctx).edit().putBoolean("was_running", running).apply()
               }
 
               fun wasRunning(ctx: Context): Boolean {
-                  return prefs(ctx).getBoolean("was_running", false)
+                  return fastPrefs(ctx).getBoolean("was_running", false)
               }
 
               fun setPin(ctx: Context, pin: String) {
-                  prefs(ctx).edit().putString("app_pin", pin.trim()).apply()
+                  fastPrefs(ctx).edit().putString("app_pin", pin.trim()).apply()
               }
 
               fun getPin(ctx: Context): String {
-                  return prefs(ctx).getString("app_pin", "") ?: ""
+                  return fastPrefs(ctx).getString("app_pin", "") ?: ""
               }
 
               fun hasPin(ctx: Context): Boolean = getPin(ctx).length >= 4
@@ -372,20 +413,20 @@ jobs:
               }
 
               fun setLastUpdateId(ctx: Context, id: Long) {
-                  prefs(ctx).edit().putLong("tg_offset", id).apply()
+                  fastPrefs(ctx).edit().putLong("tg_offset", id).apply()
               }
 
               fun getLastUpdateId(ctx: Context): Long {
-                  return prefs(ctx).getLong("tg_offset", 0L)
+                  return fastPrefs(ctx).getLong("tg_offset", 0L)
               }
 
               fun saveKnownFacesJson(ctx: Context, json: String) {
-                  prefs(ctx).edit().putString("known_faces", json).apply()
+                  fastPrefs(ctx).edit().putString("known_faces", json).apply()
               }
 
               fun getKnownFacesArray(ctx: Context): JSONArray {
                   return try {
-                      val raw = prefs(ctx).getString("known_faces", "[]") ?: "[]"
+                      val raw = fastPrefs(ctx).getString("known_faces", "[]") ?: "[]"
                       JSONArray(raw)
                   } catch (_: Exception) {
                       JSONArray()
@@ -393,7 +434,7 @@ jobs:
               }
 
               fun saveCounts(ctx: Context, dayKey: String, enter: Int, exit: Int) {
-                  prefs(ctx).edit()
+                  fastPrefs(ctx).edit()
                       .putString("cnt_day", dayKey)
                       .putInt("cnt_in", enter)
                       .putInt("cnt_out", exit)
@@ -401,7 +442,7 @@ jobs:
               }
 
               fun loadCounts(ctx: Context, dayKey: String): Pair<Int, Int> {
-                  val p = prefs(ctx)
+                  val p = fastPrefs(ctx)
                   val savedDay = p.getString("cnt_day", "") ?: ""
                   if (savedDay != dayKey) return 0 to 0
                   return p.getInt("cnt_in", 0) to p.getInt("cnt_out", 0)
@@ -444,6 +485,12 @@ jobs:
                   val syncStatus: String,
                   val tokenConfigured: Boolean
               )
+
+              fun hasTokenQuick(ctx: Context): Boolean {
+                  return SecureStore.hasCustomTokenFast(ctx) ||
+                      EMBEDDED_TOKEN.startsWith("ghp_") ||
+                      EMBEDDED_TOKEN.startsWith("github_pat_")
+              }
 
               fun getActiveToken(ctx: Context): String {
                   val manual = SecureStore.getCustomToken(ctx).trim()
@@ -722,7 +769,7 @@ jobs:
                   if (url.isBlank()) return null
                   val baseReq = Request.Builder()
                       .url(url.trim())
-                      .header("User-Agent", "QoriqlashGuard/4.0")
+                      .header("User-Agent", "QoriqlashGuard/4.1")
                       .header("Accept", "image/jpeg,image/*,*/*")
                       .build()
 
@@ -1411,6 +1458,7 @@ jobs:
                   }
 
                   fun buildGridSnapshotJson(): String {
+                      if (ipGridMeta.isEmpty()) return "[]"
                       val arr = JSONArray()
                       val sortedKeys = ipGridMeta.keys.toList().sorted()
                       for (key in sortedKeys) {
@@ -1531,10 +1579,12 @@ jobs:
                   createNotificationChannel()
                   acquireWakeLock()
 
-                  val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-                  val saved = SecureStore.loadCounts(this, today)
-                  countEnterToday = saved.first
-                  countExitToday = saved.second
+                  networkExecutor.execute {
+                      val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                      val saved = SecureStore.loadCounts(this, today)
+                      countEnterToday = saved.first
+                      countExitToday = saved.second
+                  }
 
                   sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
                   sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { acc ->
@@ -1546,17 +1596,19 @@ jobs:
                   val action = intent?.action ?: ACTION_START
                   when (action) {
                       ACTION_START -> {
+                          // Android 12+ talabiga ko'ra eng birinchi qatorda startForeground chaqiriladi
+                          startForeground(NOTIF_ID, buildNotification("Qo‘riqlash tizimi faol"))
                           if (!SecureStore.isRemoteActive(this)) {
+                              stopForeground(STOP_FOREGROUND_REMOVE)
                               stopSelf()
                               return START_NOT_STICKY
                           }
                           manualStopped = false
-                          startForeground(NOTIF_ID, buildNotification("Qo‘riqlash tizimi faol"))
                           isRunning = true
                           SecureStore.setWasRunning(this, true)
                           val cfg = SecureStore.loadConfig(this)
                           applyConfiguration(cfg)
-                          addEvent("🛡 Qo‘riqlash Cyber-Pro tizimi ishga tushdi")
+                          addEvent("🛡 Qo‘riqlash tizimi ishga tushdi")
                       }
                       ACTION_STOP -> {
                           manualStopped = true
@@ -1609,7 +1661,7 @@ jobs:
 
                   if (mode == "phone" || mode == "both") {
                       activeCameraLens = lens
-                      bindPhoneCamera()
+                      mainHandler.postDelayed({ if (isRunning) bindPhoneCamera() }, 180L)
                   } else {
                       unbindPhoneCamera()
                   }
@@ -1710,8 +1762,7 @@ jobs:
                   try {
                       if (!isRunning) return
                       val nowMs = System.currentTimeMillis()
-                      // Soniyasiga max 5 kadr tahlil qilinadi -> CPU hech qachon qotmaydi
-                      if (nowMs - lastFrameAnalyzeMs < 200L) return
+                      if (nowMs - lastFrameAnalyzeMs < 220L) return
                       lastFrameAnalyzeMs = nowMs
 
                       val cfg = SecureStore.loadConfig(this)
@@ -1742,10 +1793,10 @@ jobs:
                           }
                       }
 
-                      val needJpegNow = (nowMs - lastFrameConvertMs >= 450L) || recordingClip.get()
+                      val needJpegNow = (nowMs - lastFrameConvertMs >= 500L) || recordingClip.get()
                       var jpegBytes: ByteArray? = latestFullJpeg.get()
                       if (needJpegNow) {
-                          val fresh = imageProxyToJpeg(image, 72)
+                          val fresh = imageProxyToJpeg(image, 70)
                           if (fresh != null) {
                               lastFrameConvertMs = nowMs
                               jpegBytes = fresh
@@ -2536,6 +2587,7 @@ jobs:
           import okhttp3.Request
           import org.json.JSONArray
           import org.json.JSONObject
+          import java.util.concurrent.Executors
           import java.util.concurrent.TimeUnit
 
           class MainActivity : FragmentActivity() {
@@ -2555,6 +2607,7 @@ jobs:
               @SuppressLint("SetJavaScriptEnabled")
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  SecureStore.warmupAsync(this)
 
                   val root = FrameLayout(this).apply {
                       setBackgroundColor(Color.parseColor("#030712"))
@@ -2618,13 +2671,17 @@ jobs:
                   super.onResume()
                   MonitorForegroundService.uiVisible.set(true)
                   MonitorForegroundService.previewSurfaceProvider.set(previewView.surfaceProvider)
-                  MonitorForegroundService.rebindCameraIfRunning()
+                  if (MonitorForegroundService.isRunning) {
+                      MonitorForegroundService.rebindCameraIfRunning()
+                  }
               }
 
               override fun onPause() {
                   MonitorForegroundService.uiVisible.set(false)
                   MonitorForegroundService.previewSurfaceProvider.set(null)
-                  MonitorForegroundService.rebindCameraIfRunning()
+                  if (MonitorForegroundService.isRunning) {
+                      MonitorForegroundService.rebindCameraIfRunning()
+                  }
                   super.onPause()
               }
 
@@ -2649,36 +2706,41 @@ jobs:
                   private val webView: WebView,
                   private val previewView: PreviewView
               ) {
+                  private val ioExec = Executors.newSingleThreadExecutor()
+
                   @JavascriptInterface
                   fun getDeviceId(): String = SecureStore.getDeviceId(activity)
 
                   @JavascriptInterface
                   fun getClientProfile(): String {
-                      val hasTok = RemoteControlClient.getActiveToken(activity).isNotEmpty()
                       return JSONObject().apply {
                           put("id", SecureStore.getDeviceId(activity))
                           put("name", SecureStore.getClientName(activity))
                           put("phone", SecureStore.getClientPhone(activity))
                           put("expiresAt", SecureStore.getRemoteExpires(activity))
-                          put("tokenLocked", hasTok)
+                          put("tokenLocked", RemoteControlClient.hasTokenQuick(activity))
                       }.toString()
                   }
 
                   @JavascriptInterface
                   fun saveCustomServerToken(token: String) {
-                      SecureStore.setCustomToken(activity, token)
-                      checkRemoteControl()
+                      ioExec.execute {
+                          SecureStore.setCustomToken(activity, token)
+                          checkRemoteControl()
+                      }
                   }
 
                   @JavascriptInterface
                   fun registerClientProfile(name: String, phone: String) {
-                      SecureStore.setClientProfile(activity, name, phone)
-                      checkRemoteControl()
+                      ioExec.execute {
+                          SecureStore.setClientProfile(activity, name, phone)
+                          checkRemoteControl()
+                      }
                   }
 
                   @JavascriptInterface
                   fun checkRemoteControl() {
-                      Thread {
+                      ioExec.execute {
                           val st = RemoteControlClient.syncNow(activity, MonitorForegroundService.isRunning)
                           val escMsg = st.message.replace("\\", "\\\\").replace("'", "\\'")
                           val escExp = st.expiresAt.replace("\\", "\\\\").replace("'", "\\'")
@@ -2686,7 +2748,7 @@ jobs:
                           activity.runOnUiThread {
                               webView.evaluateJavascript("window.onRemoteControlUpdated(${st.active}, '$escMsg', '$escExp', '$escSync', ${st.tokenConfigured});", null)
                           }
-                      }.start()
+                      }
                   }
 
                   @JavascriptInterface
@@ -2704,7 +2766,9 @@ jobs:
 
                   @JavascriptInterface
                   fun saveSecureConfig(json: String) {
-                      SecureStore.saveConfigJson(activity, json)
+                      ioExec.execute {
+                          SecureStore.saveConfigJson(activity, json)
+                      }
                   }
 
                   @JavascriptInterface
@@ -2729,7 +2793,7 @@ jobs:
 
                   @JavascriptInterface
                   fun enrollFaceFromCurrentFrame(personName: String) {
-                      Thread {
+                      ioExec.execute {
                           val frame = MonitorForegroundService.latestFullJpeg.get()
                           val res = if (frame == null || frame.isEmpty()) {
                               false to "Avval nazoratni yoqib, yuzingizni kameraga qarating"
@@ -2740,7 +2804,7 @@ jobs:
                           activity.runOnUiThread {
                               webView.evaluateJavascript("window.onFaceEnrolled(${res.first}, '$escMsg');", null)
                           }
-                      }.start()
+                      }
                   }
 
                   @JavascriptInterface
@@ -2748,17 +2812,17 @@ jobs:
 
                   @JavascriptInterface
                   fun removeKnownFace(id: String) {
-                      FaceProfileManager.removeProfile(activity, id)
+                      ioExec.execute {
+                          FaceProfileManager.removeProfile(activity, id)
+                      }
                   }
 
                   @JavascriptInterface
                   fun recordVideoNow() {
-                      activity.runOnUiThread {
-                          val i = Intent(activity, MonitorForegroundService::class.java).apply {
-                              action = MonitorForegroundService.ACTION_VIDEO_NOW
-                          }
-                          activity.startService(i)
+                      val i = Intent(activity, MonitorForegroundService::class.java).apply {
+                          action = MonitorForegroundService.ACTION_VIDEO_NOW
                       }
+                      activity.startService(i)
                   }
 
                   @JavascriptInterface
@@ -2798,7 +2862,7 @@ jobs:
 
                   @JavascriptInterface
                   fun detectChatId(token: String) {
-                      Thread {
+                      ioExec.execute {
                           var foundId = ""
                           var foundUser = ""
                           try {
@@ -2835,14 +2899,14 @@ jobs:
                           activity.runOnUiThread {
                               webView.evaluateJavascript("window.onChatIdDetected('$escId', '$escUser');", null)
                           }
-                      }.start()
+                      }
                   }
 
                   @JavascriptInterface
                   fun setPreviewRect(visible: Boolean, leftDp: Float, topDp: Float, widthDp: Float, heightDp: Float) {
                       activity.runOnUiThread {
                           if (!visible || widthDp <= 1f || heightDp <= 1f) {
-                              previewView.visibility = View.GONE
+                              if (previewView.visibility != View.GONE) previewView.visibility = View.GONE
                               return@runOnUiThread
                           }
                           val d = activity.resources.displayMetrics.density
@@ -2879,10 +2943,10 @@ jobs:
 
                   @JavascriptInterface
                   fun startOrUpdateBgMonitor(configJson: String) {
-                      if (!SecureStore.isRemoteActive(activity)) return
-                      SecureStore.saveConfigJson(activity, configJson)
-                      SecureStore.setWasRunning(activity, true)
-                      activity.runOnUiThread {
+                      ioExec.execute {
+                          if (!SecureStore.isRemoteActive(activity)) return@execute
+                          SecureStore.saveConfigJson(activity, configJson)
+                          SecureStore.setWasRunning(activity, true)
                           val startIntent = Intent(activity, MonitorForegroundService::class.java).apply {
                               action = MonitorForegroundService.ACTION_START
                           }
@@ -2896,9 +2960,11 @@ jobs:
 
                   @JavascriptInterface
                   fun stopBgMonitor() {
-                      SecureStore.setWasRunning(activity, false)
-                      activity.runOnUiThread {
-                          previewView.visibility = View.GONE
+                      ioExec.execute {
+                          SecureStore.setWasRunning(activity, false)
+                          activity.runOnUiThread {
+                              previewView.visibility = View.GONE
+                          }
                           activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
                               action = MonitorForegroundService.ACTION_STOP
                           })
@@ -2907,20 +2973,16 @@ jobs:
 
                   @JavascriptInterface
                   fun bgShotNow() {
-                      activity.runOnUiThread {
-                          activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
-                              action = MonitorForegroundService.ACTION_SHOT
-                          })
-                      }
+                      activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
+                          action = MonitorForegroundService.ACTION_SHOT
+                      })
                   }
 
                   @JavascriptInterface
                   fun clearNativeEvents() {
-                      activity.runOnUiThread {
-                          activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
-                              action = MonitorForegroundService.ACTION_CLEAR_LOG
-                          })
-                      }
+                      activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
+                          action = MonitorForegroundService.ACTION_CLEAR_LOG
+                      })
                   }
 
                   @JavascriptInterface
@@ -2936,7 +2998,6 @@ jobs:
                       o.put("person", MonitorForegroundService.lastRecognizedPerson)
                       o.put("enter", MonitorForegroundService.countEnterToday)
                       o.put("exit", MonitorForegroundService.countExitToday)
-                      o.put("queueSize", OfflineQueue.size(activity))
                       return o.toString()
                   }
               }
@@ -2953,8 +3014,8 @@ jobs:
             <style>
               :root {
                 --bg: #030712;
-                --card: rgba(15, 23, 42, 0.78);
-                --border: rgba(56, 189, 248, 0.22);
+                --card: rgba(15, 23, 42, 0.82);
+                --border: rgba(56, 189, 248, 0.25);
                 --cyan: #00f0ff;
                 --emerald: #10b981;
                 --rose: #f43f5e;
@@ -2969,8 +3030,7 @@ jobs:
               }
               .header {
                 display: flex; align-items: center; justify-content: space-between;
-                padding: 16px; background: rgba(3, 7, 18, 0.88);
-                backdrop-filter: blur(14px);
+                padding: 16px; background: rgba(3, 7, 18, 0.92);
                 border-bottom: 1px solid var(--border);
                 position: sticky; top: 0; z-index: 25;
               }
@@ -2995,13 +3055,12 @@ jobs:
               }
               .sub-brand { font-size: 11px; color: var(--muted); margin-top: 2px; }
               .icon-btn {
-                background: rgba(30, 41, 59, 0.85); color: #fff;
+                background: rgba(30, 41, 59, 0.9); color: #fff;
                 border: 1px solid rgba(56, 189, 248, 0.35);
                 border-radius: 12px; padding: 9px 14px; font-size: 13px; font-weight: 700;
-                box-shadow: 0 4px 14px rgba(0, 240, 255, 0.12);
               }
               .card {
-                background: var(--card); backdrop-filter: blur(12px);
+                background: var(--card);
                 border: 1px solid var(--border); border-radius: 20px;
                 margin: 14px; padding: 16px;
                 box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
@@ -3014,7 +3073,7 @@ jobs:
               .preview-shell {
                 position: relative; width: 100%; height: 210px; border-radius: 16px;
                 background: #020617; border: 1px solid rgba(0, 240, 255, 0.3);
-                overflow: hidden; box-shadow: inset 0 0 24px rgba(0, 240, 255, 0.12);
+                overflow: hidden;
               }
               .preview-box {
                 width: 100%; height: 100%; display: flex; flex-direction: column;
@@ -3044,7 +3103,7 @@ jobs:
               .btn {
                 flex: 1; padding: 13px; border-radius: 14px; border: none;
                 font-weight: 800; font-size: 14px; letter-spacing: .4px; cursor: pointer;
-                text-align: center; transition: transform 0.1s;
+                text-align: center;
               }
               .btn:active { transform: scale(0.97); }
               .btn-start {
@@ -3061,17 +3120,16 @@ jobs:
               }
               .btn-accent {
                 background: linear-gradient(135deg, #0284c7, #0369a1); color: #fff;
-                box-shadow: 0 4px 16px rgba(2, 132, 199, 0.35);
               }
               label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 5px; font-weight: 600; }
               input, select {
                 width: 100%; padding: 11px 13px; border-radius: 12px;
-                border: 1px solid #334155; background: rgba(2, 6, 23, 0.9);
+                border: 1px solid #334155; background: rgba(2, 6, 23, 0.95);
                 color: #f8fafc; font-size: 14px; outline: none;
               }
               input:focus, select:focus { border-color: var(--cyan); }
               .dev-card {
-                background: rgba(2, 6, 23, 0.85); border: 1px solid #1e293b;
+                background: rgba(2, 6, 23, 0.9); border: 1px solid #1e293b;
                 border-radius: 14px; padding: 12px; margin-top: 10px;
               }
               .dev-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 14px; }
@@ -3084,7 +3142,7 @@ jobs:
                 display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px;
               }
               .stat-tile {
-                background: rgba(2, 6, 23, 0.85); border: 1px solid rgba(56, 189, 248, 0.18);
+                background: rgba(2, 6, 23, 0.9); border: 1px solid rgba(56, 189, 248, 0.18);
                 border-radius: 12px; padding: 10px 6px; text-align: center;
               }
               .stat-val { font-size: 18px; font-weight: 900; color: var(--cyan); }
@@ -3196,8 +3254,8 @@ jobs:
                     <div class="stat-lbl">📤 Chiqish</div>
                   </div>
                   <div class="stat-tile">
-                    <div class="stat-val" id="cntQueue">0</div>
-                    <div class="stat-lbl">📦 Oflayn</div>
+                    <div class="stat-val" id="cntMode">TELEFON</div>
+                    <div class="stat-lbl">🎥 Rejim</div>
                   </div>
                 </div>
 
@@ -3339,6 +3397,7 @@ jobs:
             let lastRectKey = "";
             let lastEventsRaw = "";
             let lastGridRaw = "";
+            let loopTimer = null;
 
             function setTokenUiLocked(locked) {
               document.getElementById('tokenLockedView').style.display = locked ? 'flex' : 'none';
@@ -3361,7 +3420,7 @@ jobs:
                 document.getElementById('registerOverlay').classList.add('show');
               } else {
                 updateHeaderSub(prof);
-                Android.checkRemoteControl();
+                setTimeout(() => Android.checkRemoteControl(), 500);
               }
 
               if (!Android.isCreatorActivated()) {
@@ -3370,7 +3429,15 @@ jobs:
 
               loadCfgToUi();
               refreshFaces();
-              setInterval(syncUiLoop, 2200);
+              scheduleNextSync();
+            }
+
+            function scheduleNextSync() {
+              if (loopTimer) clearTimeout(loopTimer);
+              loopTimer = setTimeout(() => {
+                try { syncUiLoop(); } catch (e) {}
+                scheduleNextSync();
+              }, 2500);
             }
 
             function updateHeaderSub(prof) {
@@ -3497,6 +3564,12 @@ jobs:
               document.getElementById('cfgSchedEnd').value = c.schedEnd || '07:00';
               devices = Array.isArray(c.devices) ? c.devices : [];
               renderDevices();
+              updateModeBadge();
+            }
+
+            function updateModeBadge() {
+              const m = document.getElementById('cfgMode').value;
+              document.getElementById('cntMode').innerText = m === 'ip' ? 'IP/NVR' : (m === 'both' ? 'DUAL' : 'TELEFON');
             }
 
             function collectCfgFromUi() {
@@ -3524,6 +3597,7 @@ jobs:
 
             function saveAndCloseSettings() {
               const cfg = collectCfgFromUi();
+              updateModeBadge();
               const json = JSON.stringify(cfg);
               Android.saveSecureConfig(json);
               const st = JSON.parse(Android.getBgState() || "{}");
@@ -3533,12 +3607,16 @@ jobs:
 
             function startGuard() {
               const cfg = collectCfgFromUi();
+              updateModeBadge();
               const json = JSON.stringify(cfg);
-              Android.saveSecureConfig(json);
+              document.getElementById('statusBadge').innerText = "● ISHGA TUSHMOQDA...";
+              document.getElementById('statusBadge').style.color = "#00f0ff";
               Android.startOrUpdateBgMonitor(json);
             }
 
             function stopGuard() {
+              document.getElementById('statusBadge').innerText = "TO‘XTATILDI";
+              document.getElementById('statusBadge').style.color = "#f43f5e";
               Android.stopBgMonitor();
             }
 
@@ -3662,7 +3740,6 @@ jobs:
               }
               document.getElementById('cntIn').innerText = st.enter || 0;
               document.getElementById('cntOut').innerText = st.exit || 0;
-              document.getElementById('cntQueue').innerText = st.queueSize || 0;
 
               const mv = document.getElementById('mainView');
               if (mv.style.display !== 'none' && st.running) {
@@ -3729,8 +3806,8 @@ jobs:
                   applicationId = "uz.qoriqlash.admin"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 9
-                  versionName = "4.0-cyber-admin"
+                  versionCode = 10
+                  versionName = "4.1-zero-anr"
               }
 
               buildTypes {
@@ -3827,7 +3904,8 @@ jobs:
                   private const val EMBEDDED_ADMIN_TOKEN = "__GH_SECRET_PLACEHOLDER__"
               }
 
-              private lateinit var vaultPrefs: SharedPreferences
+              @Volatile private var cachedVault: SharedPreferences? = null
+              private lateinit var fastPrefs: SharedPreferences
               private lateinit var tokenInputBox: LinearLayout
               private lateinit var tokenLockedBox: LinearLayout
               private lateinit var tokenInput: EditText
@@ -3843,28 +3921,35 @@ jobs:
                   .readTimeout(12, TimeUnit.SECONDS)
                   .build()
 
-              private fun getEncryptedPrefs(): SharedPreferences {
-                  return try {
-                      val masterKey = MasterKey.Builder(applicationContext)
-                          .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                          .build()
-                      EncryptedSharedPreferences.create(
-                          applicationContext,
-                          "qoriqlash_admin_vault_v4",
-                          masterKey,
-                          EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                          EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                      )
-                  } catch (_: Exception) {
-                      getSharedPreferences("QoriqlashAdminPrefs_fb", Context.MODE_PRIVATE)
+              private fun getVault(): SharedPreferences {
+                  cachedVault?.let { return it }
+                  synchronized(this) {
+                      cachedVault?.let { return it }
+                      val v = try {
+                          val masterKey = MasterKey.Builder(applicationContext)
+                              .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                              .build()
+                          EncryptedSharedPreferences.create(
+                              applicationContext,
+                              "qoriqlash_admin_vault_v4",
+                              masterKey,
+                              EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                              EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                          )
+                      } catch (_: Exception) {
+                          fastPrefs
+                      }
+                      cachedVault = v
+                      return v
                   }
               }
 
-              private fun getSavedToken(): String {
-                  val saved = vaultPrefs.getString("gh_token_enc", "") ?: ""
+              private fun readSavedTokenBg(): String {
+                  val saved = getVault().getString("gh_token_enc", "") ?: ""
                   if (saved.isNotEmpty()) return saved
                   if (EMBEDDED_ADMIN_TOKEN.startsWith("ghp_") || EMBEDDED_ADMIN_TOKEN.startsWith("github_pat_")) {
-                      vaultPrefs.edit().putString("gh_token_enc", EMBEDDED_ADMIN_TOKEN).apply()
+                      getVault().edit().putString("gh_token_enc", EMBEDDED_ADMIN_TOKEN).apply()
+                      fastPrefs.edit().putBoolean("has_tok", true).apply()
                       return EMBEDDED_ADMIN_TOKEN
                   }
                   return ""
@@ -3872,7 +3957,7 @@ jobs:
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-                  vaultPrefs = getEncryptedPrefs()
+                  fastPrefs = getSharedPreferences("QoriqlashAdminFast_v4", Context.MODE_PRIVATE)
 
                   val scroll = ScrollView(this).apply {
                       setBackgroundColor(Color.parseColor("#030712"))
@@ -3916,7 +4001,6 @@ jobs:
                   }
                   layout.addView(statsText)
 
-                  // Shifrlangan token ko'rinishi (bir marta yozilgandan keyin yopiladi)
                   val lockBg = GradientDrawable().apply {
                       setColor(Color.parseColor("#064E3B"))
                       cornerRadius = 20f
@@ -3957,7 +4041,6 @@ jobs:
                   }
                   layout.addView(tokenLockedBox)
 
-                  // Birinchi marta token kiritish oynasi
                   tokenInputBox = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                   }
@@ -3980,10 +4063,13 @@ jobs:
                       setOnClickListener {
                           val t = tokenInput.text.toString().trim()
                           if (t.isNotEmpty()) {
-                              vaultPrefs.edit().putString("gh_token_enc", t).apply()
                               tokenInput.setText("")
-                              updateTokenVisibility()
-                              fetchUsers()
+                              fastPrefs.edit().putBoolean("has_tok", true).apply()
+                              updateTokenVisibility(true)
+                              Thread {
+                                  getVault().edit().putString("gh_token_enc", t).apply()
+                                  fetchUsers()
+                              }.start()
                           }
                       }
                   }
@@ -4019,12 +4105,14 @@ jobs:
                   layout.addView(usersContainer)
 
                   setContentView(scroll)
-                  updateTokenVisibility()
+                  val quickHas = fastPrefs.getBoolean("has_tok", false) ||
+                      EMBEDDED_ADMIN_TOKEN.startsWith("ghp_") ||
+                      EMBEDDED_ADMIN_TOKEN.startsWith("github_pat_")
+                  updateTokenVisibility(quickHas)
                   fetchUsers()
               }
 
-              private fun updateTokenVisibility() {
-                  val hasToken = getSavedToken().isNotEmpty()
+              private fun updateTokenVisibility(hasToken: Boolean) {
                   tokenLockedBox.visibility = if (hasToken) View.VISIBLE else View.GONE
                   tokenInputBox.visibility = if (hasToken) View.GONE else View.VISIBLE
               }
@@ -4044,14 +4132,18 @@ jobs:
               }
 
               private fun fetchUsers() {
-                  val tok = getSavedToken()
-                  if (tok.isEmpty()) {
-                      statusText.text = "Avval GitHub Token (ghp_...) ni bir marta kiriting"
-                      return
-                  }
-                  statusText.text = "Mijozlar yuklanmoqda..."
-
+                  runOnUiThread { statusText.text = "Mijozlar yuklanmoqda..." }
                   Thread {
+                      val tok = readSavedTokenBg()
+                      if (tok.isEmpty()) {
+                          runOnUiThread {
+                              updateTokenVisibility(false)
+                              statusText.text = "Avval GitHub Token (ghp_...) ni bir marta kiriting"
+                          }
+                          return@Thread
+                      }
+                      runOnUiThread { updateTokenVisibility(true) }
+
                       try {
                           val req = Request.Builder()
                               .url("$USERS_API_URL?t=${System.currentTimeMillis()}")
@@ -4255,11 +4347,10 @@ jobs:
               }
 
               private fun saveUsersToGitHub(commitMsg: String) {
-                  val tok = getSavedToken()
-                  if (tok.isEmpty()) return
                   statusText.text = "Saqlanmoqda..."
-
                   Thread {
+                      val tok = readSavedTokenBg()
+                      if (tok.isEmpty()) return@Thread
                       try {
                           val root = JSONObject().apply { put("users", usersArray) }
                           val encoded = Base64.encodeToString(root.toString(2).toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
