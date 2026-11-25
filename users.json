@@ -23,6 +23,18 @@
       "active": true,
       "expiresAt": "2026-12-25",
       "note": ""
+    },
+    {
+      "id": "QR-0F7790F991",
+      "name": "Jami",
+      "phone": "870110906",
+      "model": "Vivo V2332",
+      "registeredAt": "2026-11-25 23:40",
+      "lastSeen": "2026-11-25 23:40",
+      "monitoring": true,
+      "active": true,
+      "expiresAt": "2026-12-25",
+      "note": ""
     }
   ]
 }
