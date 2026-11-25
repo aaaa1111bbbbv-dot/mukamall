@@ -1,0 +1,4068 @@
+name: Build Mukamal Client va Admin APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK & Gradle
+        run: |
+          set -e
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          mkdir -p "$SDK_ROOT"
+          echo "sdk.dir=$SDK_ROOT" > local.properties
+
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -name "sdkmanager" 2>/dev/null | head -n 1 || true)
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-34" "build-tools;34.0.0" "platform-tools" || true
+          fi
+
+          if ! command -v gradle >/dev/null 2>&1; then
+            curl -fsSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d /opt/gradle
+            export PATH="/opt/gradle/gradle-8.7/bin:$PATH"
+            echo "/opt/gradle/gradle-8.7/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Create complete project files
+        env:
+          GH_SECRET_TOKEN: ${{ secrets.MY_GH_TOKEN }}
+        run: |
+          set -e
+          mkdir -p app/src/main/assets app/src/main/java/uz/qoriqlash/app app/src/main/res/values
+          mkdir -p admin/src/main/java/uz/qoriqlash/admin admin/src/main/res/values
+
+          cat <<'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Qoriqlash"
+          include(":app", ":admin")
+          EOF
+
+          cat <<'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat <<'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat <<'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "uz.qoriqlash.app"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "uz.qoriqlash.app"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 14
+                  versionName = "3.4-mukamal"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      proguardFiles(
+                          getDefaultProguardFile("proguard-android-optimize.txt"),
+                          "proguard-rules.pro"
+                      )
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.activity:activity-ktx:1.9.2")
+              implementation("androidx.fragment:fragment-ktx:1.8.2")
+              implementation("androidx.lifecycle:lifecycle-service:2.8.4")
+              implementation("androidx.camera:camera-core:1.3.4")
+              implementation("androidx.camera:camera-camera2:1.3.4")
+              implementation("androidx.camera:camera-lifecycle:1.3.4")
+              implementation("androidx.camera:camera-view:1.3.4")
+              implementation("androidx.camera:camera-video:1.3.4")
+              implementation("androidx.security:security-crypto:1.1.0-alpha06")
+              implementation("androidx.biometric:biometric:1.1.0")
+              implementation("com.google.mlkit:face-detection:16.1.7")
+              implementation("com.google.mlkit:object-detection:17.0.2")
+              implementation("com.squareup.okhttp3:okhttp:4.12.0")
+          }
+          EOF
+
+          cat <<'EOF' > app/proguard-rules.pro
+          -keep class uz.qoriqlash.app.MainActivity$CameraBridge {
+              @android.webkit.JavascriptInterface <methods>;
+          }
+          -keep class uz.qoriqlash.app.MonitorForegroundService { *; }
+          EOF
+
+          cat <<'EOF' > app/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">Qo‘riqlash</string>
+          </resources>
+          EOF
+
+          cat <<'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+              <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+              <uses-feature android:name="android.hardware.camera" android:required="false" />
+              <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+              <application
+                  android:allowBackup="false"
+                  android:fullBackupContent="false"
+                  android:hardwareAccelerated="true"
+                  android:label="Qo‘riqlash"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <service
+                      android:name=".MonitorForegroundService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:stopWithTask="false"
+                      android:foregroundServiceType="dataSync|camera|microphone" />
+
+                  <receiver
+                      android:name=".BootReceiver"
+                      android:enabled="true"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                          <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                          <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                      </intent-filter>
+                  </receiver>
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/SecureStore.kt
+          package uz.qoriqlash.app
+
+          import android.annotation.SuppressLint
+          import android.content.Context
+          import android.content.SharedPreferences
+          import android.os.Build
+          import android.provider.Settings
+          import androidx.security.crypto.EncryptedSharedPreferences
+          import androidx.security.crypto.MasterKey
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.security.MessageDigest
+          import java.util.UUID
+
+          object SecureStore {
+              private const val PREF_NAME = "qoriqlash_vault_v3"
+              private const val CREATOR_CODE_HASH = "e69b7525e846a20b5663e0d3f7510f72b3e302212650d1c0c563a3560d481b39"
+
+              private fun prefs(ctx: Context): SharedPreferences {
+                  return try {
+                      val masterKey = MasterKey.Builder(ctx.applicationContext)
+                          .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                          .build()
+                      EncryptedSharedPreferences.create(
+                          ctx.applicationContext,
+                          PREF_NAME,
+                          masterKey,
+                          EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                          EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                      )
+                  } catch (_: Exception) {
+                      ctx.applicationContext.getSharedPreferences(PREF_NAME + "_fb", Context.MODE_PRIVATE)
+                  }
+              }
+
+              private fun sha256(text: String): String {
+                  val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+                  return digest.joinToString("") { "%02x".format(it) }
+              }
+
+              @SuppressLint("HardwareIds")
+              fun getDeviceId(ctx: Context): String {
+                  val p = prefs(ctx)
+                  var id = p.getString("unique_dev_id", "") ?: ""
+                  if (id.isEmpty()) {
+                      val androidId = try {
+                          Settings.Secure.getString(ctx.contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+                      } catch (_: Exception) { "" }
+                      id = if (androidId.length >= 8) {
+                          "QR-${androidId.take(10).uppercase()}"
+                      } else {
+                          "QR-${UUID.randomUUID().toString().take(10).uppercase()}"
+                      }
+                      p.edit().putString("unique_dev_id", id).apply()
+                  }
+                  return id
+              }
+
+              fun getDeviceModel(): String {
+                  val manu = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
+                  val model = Build.MODEL
+                  return if (model.startsWith(manu, ignoreCase = true)) model else "$manu $model"
+              }
+
+              fun setClientProfile(ctx: Context, name: String, phone: String) {
+                  prefs(ctx).edit()
+                      .putString("client_name", name.trim())
+                      .putString("client_phone", phone.trim())
+                      .apply()
+              }
+
+              fun getClientName(ctx: Context): String = prefs(ctx).getString("client_name", "") ?: ""
+              fun getClientPhone(ctx: Context): String = prefs(ctx).getString("client_phone", "") ?: ""
+
+              fun setCustomToken(ctx: Context, token: String) {
+                  prefs(ctx).edit().putString("custom_gh_token", token.trim()).apply()
+              }
+
+              fun getCustomToken(ctx: Context): String = prefs(ctx).getString("custom_gh_token", "") ?: ""
+
+              fun setRemoteControlState(
+                  ctx: Context,
+                  active: Boolean,
+                  remoteCode: String,
+                  message: String,
+                  expiresAt: String
+              ) {
+                  prefs(ctx).edit()
+                      .putBoolean("remote_active", active)
+                      .putString("remote_code", remoteCode.trim())
+                      .putString("remote_msg", message.trim())
+                      .putString("remote_expires", expiresAt.trim())
+                      .apply()
+              }
+
+              fun isRemoteActive(ctx: Context): Boolean = prefs(ctx).getBoolean("remote_active", true)
+              fun getRemoteMessage(ctx: Context): String = prefs(ctx).getString("remote_msg", "") ?: ""
+              fun getRemoteCode(ctx: Context): String = prefs(ctx).getString("remote_code", "") ?: ""
+              fun getRemoteExpires(ctx: Context): String = prefs(ctx).getString("remote_expires", "") ?: ""
+
+              fun isCreatorActivated(ctx: Context): Boolean {
+                  return prefs(ctx).getBoolean("creator_activated_once", false)
+              }
+
+              fun verifyAndActivateCreatorCode(ctx: Context, rawInput: String): Boolean {
+                  val normalized = rawInput.trim().lowercase()
+                  if (normalized.isEmpty()) return false
+                  val remoteCode = getRemoteCode(ctx).lowercase()
+                  val ok = (remoteCode.isNotEmpty() && normalized == remoteCode) ||
+                           normalized == "alisa" ||
+                           sha256(normalized) == CREATOR_CODE_HASH
+                  if (ok) {
+                      prefs(ctx).edit().putBoolean("creator_activated_once", true).apply()
+                      return true
+                  }
+                  return false
+              }
+
+              fun saveConfigJson(ctx: Context, json: String) {
+                  prefs(ctx).edit().putString("cfg_json", json).apply()
+              }
+
+              fun loadConfigJson(ctx: Context): String {
+                  return prefs(ctx).getString("cfg_json", "") ?: ""
+              }
+
+              fun loadConfig(ctx: Context): JSONObject {
+                  val raw = loadConfigJson(ctx)
+                  return try {
+                      if (raw.isNotEmpty()) JSONObject(raw) else JSONObject()
+                  } catch (_: Exception) {
+                      JSONObject()
+                  }
+              }
+
+              fun setWasRunning(ctx: Context, running: Boolean) {
+                  prefs(ctx).edit().putBoolean("was_running", running).apply()
+              }
+
+              fun wasRunning(ctx: Context): Boolean {
+                  return prefs(ctx).getBoolean("was_running", false)
+              }
+
+              fun setPin(ctx: Context, pin: String) {
+                  prefs(ctx).edit().putString("app_pin", pin.trim()).apply()
+              }
+
+              fun getPin(ctx: Context): String {
+                  return prefs(ctx).getString("app_pin", "") ?: ""
+              }
+
+              fun hasPin(ctx: Context): Boolean = getPin(ctx).length >= 4
+
+              fun checkPin(ctx: Context, input: String): Boolean {
+                  val saved = getPin(ctx)
+                  if (saved.isEmpty()) return true
+                  return saved == input.trim()
+              }
+
+              fun setLastUpdateId(ctx: Context, id: Long) {
+                  prefs(ctx).edit().putLong("tg_offset", id).apply()
+              }
+
+              fun getLastUpdateId(ctx: Context): Long {
+                  return prefs(ctx).getLong("tg_offset", 0L)
+              }
+
+              fun saveKnownFacesJson(ctx: Context, json: String) {
+                  prefs(ctx).edit().putString("known_faces", json).apply()
+              }
+
+              fun getKnownFacesArray(ctx: Context): JSONArray {
+                  return try {
+                      val raw = prefs(ctx).getString("known_faces", "[]") ?: "[]"
+                      JSONArray(raw)
+                  } catch (_: Exception) {
+                      JSONArray()
+                  }
+              }
+
+              fun saveCounts(ctx: Context, dayKey: String, enter: Int, exit: Int) {
+                  prefs(ctx).edit()
+                      .putString("cnt_day", dayKey)
+                      .putInt("cnt_in", enter)
+                      .putInt("cnt_out", exit)
+                      .apply()
+              }
+
+              fun loadCounts(ctx: Context, dayKey: String): Pair<Int, Int> {
+                  val p = prefs(ctx)
+                  val savedDay = p.getString("cnt_day", "") ?: ""
+                  if (savedDay != dayKey) return 0 to 0
+                  return p.getInt("cnt_in", 0) to p.getInt("cnt_out", 0)
+              }
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/RemoteControlClient.kt
+          package uz.qoriqlash.app
+
+          import android.content.Context
+          import android.util.Base64
+          import okhttp3.MediaType.Companion.toMediaType
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import okhttp3.RequestBody.Companion.toRequestBody
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.text.SimpleDateFormat
+          import java.util.Calendar
+          import java.util.Date
+          import java.util.Locale
+          import java.util.concurrent.TimeUnit
+
+          object RemoteControlClient {
+              private const val CONFIG_RAW_URL = "https://raw.githubusercontent.com/aaaa1111bbbbv-dot/mukamal/main/config.json"
+              private const val USERS_API_URL = "https://api.github.com/repos/aaaa1111bbbbv-dot/mukamal/contents/users.json"
+              private const val EMBEDDED_TOKEN = "__GH_SECRET_PLACEHOLDER__"
+
+              private val client = OkHttpClient.Builder()
+                  .connectTimeout(6, TimeUnit.SECONDS)
+                  .readTimeout(8, TimeUnit.SECONDS)
+                  .build()
+
+              data class RemoteState(
+                  val active: Boolean,
+                  val code: String,
+                  val message: String,
+                  val expiresAt: String,
+                  val syncStatus: String
+              )
+
+              private fun getActiveToken(ctx: Context): String {
+                  val manual = SecureStore.getCustomToken(ctx).trim()
+                  if (manual.startsWith("ghp_") || manual.startsWith("github_pat_")) return manual
+                  if (EMBEDDED_TOKEN.startsWith("ghp_") || EMBEDDED_TOKEN.startsWith("github_pat_")) return EMBEDDED_TOKEN
+                  return ""
+              }
+
+              private fun isDateExpired(yyyyMmDd: String): Boolean {
+                  if (yyyyMmDd.isBlank()) return false
+                  return try {
+                      val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient = false }
+                      val expDate = sdf.parse(yyyyMmDd.trim()) ?: return false
+                      val cal = Calendar.getInstance().apply {
+                          time = expDate
+                          set(Calendar.HOUR_OF_DAY, 23)
+                          set(Calendar.MINUTE, 59)
+                          set(Calendar.SECOND, 59)
+                      }
+                      System.currentTimeMillis() > cal.timeInMillis
+                  } catch (_: Exception) {
+                      false
+                  }
+              }
+
+              private fun addDaysFormatted(days: Int): String {
+                  val cal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, days) }
+                  return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+              }
+
+              private fun nowFormatted(): String {
+                  return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+              }
+
+              fun syncNow(ctx: Context, isMonitoringRunning: Boolean = false): RemoteState {
+                  var globalActive = true
+                  var globalCode = "Alisa"
+                  var globalMsg = ""
+
+                  try {
+                      val req = Request.Builder()
+                          .url("$CONFIG_RAW_URL?t=${System.currentTimeMillis()}")
+                          .header("Cache-Control", "no-cache")
+                          .build()
+                      client.newCall(req).execute().use { resp ->
+                          if (resp.isSuccessful) {
+                              val body = resp.body?.string() ?: ""
+                              if (body.isNotEmpty()) {
+                                  val j = JSONObject(body)
+                                  globalActive = j.optBoolean("active", true)
+                                  globalCode = j.optString("code", "Alisa")
+                                  globalMsg = j.optString("message", "")
+                              }
+                          }
+                      }
+                  } catch (_: Exception) {
+                  }
+
+                  val tok = getActiveToken(ctx)
+                  if (tok.isNotEmpty()) {
+                      val userSync = syncUserRecordWithGitHub(ctx, tok, isMonitoringRunning, globalMsg)
+                      if (userSync != null) {
+                          val finalActive = globalActive && userSync.first
+                          val finalMsg = if (!finalActive && userSync.second.isNotEmpty()) {
+                              userSync.second
+                          } else if (userSync.second.isNotEmpty()) {
+                              userSync.second
+                          } else {
+                              globalMsg
+                          }
+                          SecureStore.setRemoteControlState(ctx, finalActive, globalCode, finalMsg, userSync.third)
+                          return RemoteState(finalActive, globalCode, finalMsg, userSync.third, "✅ Admin serverga ulangan")
+                      }
+                  }
+
+                  val cachedExp = SecureStore.getRemoteExpires(ctx)
+                  val expBlocked = isDateExpired(cachedExp)
+                  val finalAct = globalActive && !expBlocked && SecureStore.isRemoteActive(ctx)
+                  val finalMsg = if (expBlocked) {
+                      "Obuna muddatingiz ($cachedExp) tugadi. Davom ettirish uchun to‘lov qiling."
+                  } else {
+                      globalMsg.ifEmpty { SecureStore.getRemoteMessage(ctx) }
+                  }
+                  SecureStore.setRemoteControlState(ctx, finalAct, globalCode, finalMsg, cachedExp)
+                  val stLabel = if (tok.isEmpty()) "⚠️ Server tokeni kiritilmagan" else "⚠️ Serverga ulanishda xato"
+                  return RemoteState(finalAct, globalCode, finalMsg, cachedExp, stLabel)
+              }
+
+              private fun syncUserRecordWithGitHub(
+                  ctx: Context,
+                  tok: String,
+                  isMonitoringRunning: Boolean,
+                  defaultMsg: String
+              ): Triple<Boolean, String, String>? {
+                  val devId = SecureStore.getDeviceId(ctx)
+                  val clientName = SecureStore.getClientName(ctx)
+                  if (clientName.isEmpty()) return null
+
+                  val clientPhone = SecureStore.getClientPhone(ctx)
+                  val model = SecureStore.getDeviceModel()
+                  val nowStr = nowFormatted()
+
+                  for (attempt in 0..1) {
+                      try {
+                          val getReq = Request.Builder()
+                              .url("$USERS_API_URL?t=${System.currentTimeMillis()}")
+                              .header("Authorization", "token $tok")
+                              .header("Accept", "application/vnd.github.v3+json")
+                              .build()
+
+                          var sha = ""
+                          var rootObj = JSONObject().apply { put("users", JSONArray()) }
+
+                          client.newCall(getReq).execute().use { resp ->
+                              if (resp.isSuccessful) {
+                                  val resJson = JSONObject(resp.body?.string() ?: "{}")
+                                  sha = resJson.optString("sha", "")
+                                  val b64 = resJson.optString("content", "").replace("\n", "")
+                                  if (b64.isNotEmpty()) {
+                                      val decoded = String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
+                                      rootObj = JSONObject(decoded)
+                                  }
+                              } else if (resp.code != 404) {
+                                  return null
+                              }
+                          }
+
+                          val usersArr = rootObj.optJSONArray("users") ?: JSONArray()
+                          var foundObj: JSONObject? = null
+                          for (i in 0 until usersArr.length()) {
+                              val u = usersArr.optJSONObject(i) ?: continue
+                              if (u.optString("id") == devId) {
+                                  foundObj = u
+                                  break
+                              }
+                          }
+
+                          if (foundObj == null) {
+                              foundObj = JSONObject().apply {
+                                  put("id", devId)
+                                  put("name", clientName)
+                                  put("phone", clientPhone)
+                                  put("model", model)
+                                  put("registeredAt", nowStr)
+                                  put("lastSeen", nowStr)
+                                  put("monitoring", isMonitoringRunning)
+                                  put("active", true)
+                                  put("expiresAt", addDaysFormatted(30))
+                                  put("note", "")
+                              }
+                              usersArr.put(foundObj)
+                          } else {
+                              foundObj.put("name", clientName)
+                              if (clientPhone.isNotEmpty()) foundObj.put("phone", clientPhone)
+                              foundObj.put("model", model)
+                              foundObj.put("lastSeen", nowStr)
+                              foundObj.put("monitoring", isMonitoringRunning)
+                          }
+
+                          val userActiveFlag = foundObj.optBoolean("active", true)
+                          val expiresAt = foundObj.optString("expiresAt", "")
+                          val customNote = foundObj.optString("note", "")
+                          val expired = isDateExpired(expiresAt)
+                          if (expired && userActiveFlag) {
+                              foundObj.put("active", false)
+                          }
+
+                          rootObj.put("users", usersArr)
+                          val encoded = Base64.encodeToString(rootObj.toString(2).toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                          val putBody = JSONObject().apply {
+                              put("message", "User sync: $devId")
+                              put("content", encoded)
+                              if (sha.isNotEmpty()) put("sha", sha)
+                          }
+
+                          val putReq = Request.Builder()
+                              .url(USERS_API_URL)
+                              .header("Authorization", "token $tok")
+                              .header("Accept", "application/vnd.github.v3+json")
+                              .put(putBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                              .build()
+
+                          client.newCall(putReq).execute().use { putResp ->
+                              if (putResp.isSuccessful) {
+                                  val allowed = userActiveFlag && !expired
+                                  val msgOut = when {
+                                      expired -> "Obuna muddatingiz ($expiresAt) tugadi. Davom ettirish uchun to‘lov qiling."
+                                      !userActiveFlag -> customNote.ifEmpty { "Sizning obunangiz vaqtincha to‘xtatilgan." }
+                                      else -> customNote.ifEmpty { defaultMsg }
+                                  }
+                                  return Triple(allowed, msgOut, expiresAt)
+                              }
+                          }
+                      } catch (_: Exception) {
+                      }
+                  }
+                  return null
+              }
+          }
+          EOF
+
+          # GitHub Secret'ni Kotlin faylga xavfsiz joylashtirish
+          if [ -n "$GH_SECRET_TOKEN" ]; then
+            sed -i "s|__GH_SECRET_PLACEHOLDER__|$GH_SECRET_TOKEN|g" app/src/main/java/uz/qoriqlash/app/RemoteControlClient.kt
+          fi
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/BootReceiver.kt
+          package uz.qoriqlash.app
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Build
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent?) {
+                  val action = intent?.action ?: return
+                  if (action == Intent.ACTION_BOOT_COMPLETED ||
+                      action == "android.intent.action.QUICKBOOT_POWERON" ||
+                      action == Intent.ACTION_MY_PACKAGE_REPLACED
+                  ) {
+                      if (SecureStore.wasRunning(context) && SecureStore.isRemoteActive(context)) {
+                          val startIntent = Intent(context, MonitorForegroundService::class.java).apply {
+                              this.action = MonitorForegroundService.ACTION_START
+                          }
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              context.startForegroundService(startIntent)
+                          } else {
+                              context.startService(startIntent)
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/CameraAuthClient.kt
+          package uz.qoriqlash.app
+
+          import android.util.Base64
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import java.security.MessageDigest
+          import java.security.SecureRandom
+          import java.security.cert.X509Certificate
+          import java.util.Locale
+          import java.util.concurrent.TimeUnit
+          import java.util.concurrent.atomic.AtomicInteger
+          import javax.net.ssl.SSLContext
+          import javax.net.ssl.TrustManager
+          import javax.net.ssl.X509TrustManager
+
+          object CameraAuthClient {
+              private val nonceCounter = AtomicInteger(1)
+
+              private val client: OkHttpClient by lazy {
+                  val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
+                      override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                      override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                      override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+                  })
+                  val sslContext = SSLContext.getInstance("TLS")
+                  sslContext.init(null, trustAll, SecureRandom())
+                  OkHttpClient.Builder()
+                      .sslSocketFactory(sslContext.socketFactory, trustAll[0] as X509TrustManager)
+                      .hostnameVerifier { _, _ -> true }
+                      .connectTimeout(5, TimeUnit.SECONDS)
+                      .readTimeout(8, TimeUnit.SECONDS)
+                      .build()
+              }
+
+              fun fetchSnapshotBytes(url: String, user: String, pass: String): ByteArray? {
+                  if (url.isBlank()) return null
+                  val baseReq = Request.Builder()
+                      .url(url.trim())
+                      .header("User-Agent", "QoriqlashGuard/3.4")
+                      .header("Accept", "image/jpeg,image/*,*/*")
+                      .build()
+
+                  client.newCall(baseReq).execute().use { firstResp ->
+                      if (firstResp.isSuccessful) {
+                          val bytes = firstResp.body?.bytes()
+                          if (bytes != null && bytes.isNotEmpty()) return bytes
+                      }
+                      if (firstResp.code == 401 && user.isNotEmpty()) {
+                          val challenges = firstResp.headers("WWW-Authenticate")
+                          val digestHeader = challenges.firstOrNull { it.startsWith("Digest", ignoreCase = true) }
+                          if (digestHeader != null) {
+                              val auth = buildDigestHeader(digestHeader, "GET", baseReq.url.encodedPath, user, pass)
+                              if (auth != null) {
+                                  val retryReq = baseReq.newBuilder().header("Authorization", auth).build()
+                                  client.newCall(retryReq).execute().use { secondResp ->
+                                      if (secondResp.isSuccessful) {
+                                          return secondResp.body?.bytes()
+                                      }
+                                  }
+                              }
+                          }
+                          val basicToken = Base64.encodeToString("$user:$pass".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                          val basicReq = baseReq.newBuilder().header("Authorization", "Basic $basicToken").build()
+                          client.newCall(basicReq).execute().use { thirdResp ->
+                              if (thirdResp.isSuccessful) {
+                                  return thirdResp.body?.bytes()
+                              }
+                          }
+                      }
+                  }
+                  return null
+              }
+
+              private fun buildDigestHeader(
+                  header: String,
+                  method: String,
+                  uri: String,
+                  user: String,
+                  pass: String
+              ): String? {
+                  val params = parseAuthParams(header.removePrefix("Digest").removePrefix("digest").trim())
+                  val realm = params["realm"] ?: return null
+                  val nonce = params["nonce"] ?: return null
+                  val qop = params["qop"]
+                  val opaque = params["opaque"]
+                  val algorithm = params["algorithm"] ?: "MD5"
+
+                  var ha1 = md5Hex("$user:$realm:$pass")
+                  val cnonce = String.format(Locale.US, "%08x", SecureRandom().nextInt())
+                  if (algorithm.equals("MD5-sess", ignoreCase = true)) {
+                      ha1 = md5Hex("$ha1:$nonce:$cnonce")
+                  }
+                  val ha2 = md5Hex("$method:$uri")
+
+                  val nc = String.format(Locale.US, "%08x", nonceCounter.getAndIncrement())
+                  val chosenQop = qop?.split(",")?.map { it.trim() }?.firstOrNull { it == "auth" }
+                  val responseHash = if (chosenQop != null) {
+                      md5Hex("$ha1:$nonce:$nc:$cnonce:$chosenQop:$ha2")
+                  } else {
+                      md5Hex("$ha1:$nonce:$ha2")
+                  }
+
+                  val sb = StringBuilder()
+                  sb.append("Digest username=\"").append(user).append("\", ")
+                  sb.append("realm=\"").append(realm).append("\", ")
+                  sb.append("nonce=\"").append(nonce).append("\", ")
+                  sb.append("uri=\"").append(uri).append("\", ")
+                  sb.append("response=\"").append(responseHash).append("\"")
+                  if (chosenQop != null) {
+                      sb.append(", qop=").append(chosenQop)
+                      sb.append(", nc=").append(nc)
+                      sb.append(", cnonce=\"").append(cnonce).append("\"")
+                  }
+                  if (opaque != null) {
+                      sb.append(", opaque=\"").append(opaque).append("\"")
+                  }
+                  return sb.toString()
+              }
+
+              private fun parseAuthParams(raw: String): Map<String, String> {
+                  val map = mutableMapOf<String, String>()
+                  val regex = Regex("""(\w+)=("([^"]*)"|([^,\s]+))""")
+                  for (m in regex.findAll(raw)) {
+                      val key = m.groupValues[1]
+                      val value = if (m.groupValues[3].isNotEmpty()) m.groupValues[3] else m.groupValues[4]
+                      map[key] = value
+                  }
+                  return map
+              }
+
+              private fun md5Hex(input: String): String {
+                  val digest = MessageDigest.getInstance("MD5").digest(input.toByteArray(Charsets.UTF_8))
+                  return digest.joinToString("") { "%02x".format(it) }
+              }
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/FaceProfileManager.kt
+          package uz.qoriqlash.app
+
+          import android.content.Context
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import android.graphics.Rect
+          import com.google.android.gms.tasks.Tasks
+          import com.google.mlkit.vision.common.InputImage
+          import com.google.mlkit.vision.face.Face
+          import com.google.mlkit.vision.face.FaceDetection
+          import com.google.mlkit.vision.face.FaceDetectorOptions
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import kotlin.math.sqrt
+
+          object FaceProfileManager {
+
+              private val detector by lazy {
+                  val opts = FaceDetectorOptions.Builder()
+                      .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                      .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+                      .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
+                      .setMinFaceSize(0.12f)
+                      .build()
+                  FaceDetection.getClient(opts)
+              }
+
+              data class FaceScanOutcome(
+                  val totalFaces: Int,
+                  val knownNames: List<String>,
+                  val unknownCount: Int,
+                  val primaryBox: Rect?
+              )
+
+              fun analyzeBitmap(ctx: Context, bmp: Bitmap): FaceScanOutcome {
+                  return try {
+                      val image = InputImage.fromBitmap(bmp, 0)
+                      val faces = Tasks.await(detector.process(image))
+                      if (faces.isEmpty()) {
+                          return FaceScanOutcome(0, emptyList(), 0, null)
+                      }
+                      val savedProfiles = SecureStore.getKnownFacesArray(ctx)
+                      val matchedNames = mutableListOf<String>()
+                      var unknowns = 0
+
+                      for (face in faces) {
+                          val vec = extractFaceSignature(bmp, face.boundingBox)
+                          if (vec == null) {
+                              unknowns++
+                              continue
+                          }
+                          val bestMatch = findBestMatch(vec, savedProfiles)
+                          if (bestMatch != null) {
+                              matchedNames.add(bestMatch)
+                          } else {
+                              unknowns++
+                          }
+                      }
+                      val largest = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }?.boundingBox
+                      FaceScanOutcome(faces.size, matchedNames, unknowns, largest)
+                  } catch (_: Exception) {
+                      FaceScanOutcome(0, emptyList(), 0, null)
+                  }
+              }
+
+              fun enrollFromJpeg(ctx: Context, personName: String, jpegBytes: ByteArray): Pair<Boolean, String> {
+                  val cleanName = personName.trim()
+                  if (cleanName.isEmpty()) return false to "Ism kiritilmadi"
+                  val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                      ?: return false to "Rasm o‘qilmadi"
+
+                  return try {
+                      val image = InputImage.fromBitmap(bmp, 0)
+                      val faces = Tasks.await(detector.process(image))
+                      if (faces.isEmpty()) {
+                          return false to "Rasmda yuz topilmadi. Yuzingizni kameraga yaqinroq va yorug‘roq tuting."
+                      }
+                      val mainFace: Face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }!!
+                      val sig = extractFaceSignature(bmp, mainFace.boundingBox)
+                          ?: return false to "Yuz konturi aniq emas"
+
+                      val arr = SecureStore.getKnownFacesArray(ctx)
+                      val vecJson = JSONArray()
+                      for (v in sig) vecJson.put(v.toDouble())
+
+                      val entry = JSONObject().apply {
+                          put("id", System.currentTimeMillis().toString())
+                          put("name", cleanName)
+                          put("vec", vecJson)
+                      }
+                      arr.put(entry)
+                      SecureStore.saveKnownFacesJson(ctx, arr.toString())
+                      true to "✅ '$cleanName' tanishlar ro‘yxatiga qo‘shildi!"
+                  } catch (e: Exception) {
+                      false to "Xatolik: ${e.message}"
+                  }
+              }
+
+              fun listProfilesSummary(ctx: Context): String {
+                  val arr = SecureStore.getKnownFacesArray(ctx)
+                  val out = JSONArray()
+                  for (i in 0 until arr.length()) {
+                      val item = arr.optJSONObject(i) ?: continue
+                      out.put(JSONObject().apply {
+                          put("id", item.optString("id"))
+                          put("name", item.optString("name"))
+                      })
+                  }
+                  return out.toString()
+              }
+
+              fun removeProfile(ctx: Context, id: String) {
+                  val arr = SecureStore.getKnownFacesArray(ctx)
+                  val next = JSONArray()
+                  for (i in 0 until arr.length()) {
+                      val item = arr.optJSONObject(i) ?: continue
+                      if (item.optString("id") != id) next.put(item)
+                  }
+                  SecureStore.saveKnownFacesJson(ctx, next.toString())
+              }
+
+              private fun extractFaceSignature(src: Bitmap, box: Rect): FloatArray? {
+                  val left = box.left.coerceIn(0, src.width - 1)
+                  val top = box.top.coerceIn(0, src.height - 1)
+                  val right = box.right.coerceIn(left + 1, src.width)
+                  val bottom = box.bottom.coerceIn(top + 1, src.height)
+                  val w = right - left
+                  val h = bottom - top
+                  if (w < 20 || h < 20) return null
+
+                  val cropped = Bitmap.createBitmap(src, left, top, w, h)
+                  val grid = 12
+                  val scaled = Bitmap.createScaledBitmap(cropped, grid, grid, true)
+
+                  val raw = FloatArray(grid * grid)
+                  var sum = 0f
+                  var idx = 0
+                  for (y in 0 until grid) {
+                      for (x in 0 until grid) {
+                          val p = scaled.getPixel(x, y)
+                          val r = (p shr 16) and 0xFF
+                          val g = (p shr 8) and 0xFF
+                          val b = p and 0xFF
+                          val luma = 0.299f * r + 0.587f * g + 0.114f * b
+                          raw[idx++] = luma
+                          sum += luma
+                      }
+                  }
+                  val mean = sum / raw.size
+                  var normSq = 0f
+                  for (i in raw.indices) {
+                      raw[i] -= mean
+                      normSq += raw[i] * raw[i]
+                  }
+                  val norm = sqrt(normSq)
+                  if (norm < 1e-4f) return null
+                  for (i in raw.indices) raw[i] /= norm
+                  return raw
+              }
+
+              private fun findBestMatch(query: FloatArray, saved: JSONArray): String? {
+                  var bestScore = -1f
+                  var bestName: String? = null
+
+                  for (i in 0 until saved.length()) {
+                      val item = saved.optJSONObject(i) ?: continue
+                      val vecArr = item.optJSONArray("vec") ?: continue
+                      if (vecArr.length() != query.size) continue
+                      var dot = 0f
+                      for (k in query.indices) {
+                          dot += query[k] * vecArr.optDouble(k, 0.0).toFloat()
+                      }
+                      if (dot > bestScore) {
+                          bestScore = dot
+                          bestName = item.optString("name")
+                      }
+                  }
+                  return if (bestScore >= 0.78f) bestName else null
+              }
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/DangerAudioDetector.kt
+          package uz.qoriqlash.app
+
+          import android.annotation.SuppressLint
+          import android.media.AudioFormat
+          import android.media.AudioRecord
+          import android.media.MediaRecorder
+          import kotlin.math.abs
+          import kotlin.math.sqrt
+
+          class DangerAudioDetector(
+              private val onAcousticAlert: (reason: String, levelDb: Int) -> Unit
+          ) {
+              @Volatile
+              private var running = false
+              private var worker: Thread? = null
+              private var lastTriggerMs = 0L
+
+              @SuppressLint("MissingPermission")
+              fun start() {
+                  if (running) return
+                  running = true
+                  worker = Thread {
+                      val sampleRate = 16000
+                      val minBuf = AudioRecord.getMinBufferSize(
+                          sampleRate,
+                          AudioFormat.CHANNEL_IN_MONO,
+                          AudioFormat.ENCODING_PCM_16BIT
+                      )
+                      if (minBuf <= 0) return@Thread
+
+                      var recorder: AudioRecord? = null
+                      try {
+                          recorder = AudioRecord(
+                              MediaRecorder.AudioSource.MIC,
+                              sampleRate,
+                              AudioFormat.CHANNEL_IN_MONO,
+                              AudioFormat.ENCODING_PCM_16BIT,
+                              minBuf * 2
+                          )
+                          if (recorder.state != AudioRecord.STATE_INITIALIZED) return@Thread
+                          recorder.startRecording()
+
+                          val buf = ShortArray(minBuf)
+                          while (running) {
+                              val read = recorder.read(buf, 0, buf.size)
+                              if (read <= 0) continue
+
+                              var sumSq = 0.0
+                              var zeroCrossings = 0
+                              var prev = buf[0].toInt()
+                              var peak = 0
+
+                              for (i in 0 until read) {
+                                  val v = buf[i].toInt()
+                                  val av = abs(v)
+                                  if (av > peak) peak = av
+                                  sumSq += v.toDouble() * v.toDouble()
+                                  if ((v >= 0 && prev < 0) || (v < 0 && prev >= 0)) {
+                                      zeroCrossings++
+                                  }
+                                  prev = v
+                              }
+
+                              val rms = sqrt(sumSq / read)
+                              val zcrRatio = zeroCrossings.toDouble() / read.toDouble()
+                              val now = System.currentTimeMillis()
+
+                              if (rms > 6800 && now - lastTriggerMs > 18_000L) {
+                                  lastTriggerMs = now
+                                  val reason = when {
+                                      zcrRatio > 0.28 && peak > 24000 -> "💥 Shisha sinishi yoki keskin zarba tovushi!"
+                                      zcrRatio > 0.14 && rms > 8500 -> "😱 Baland qichqiriq yoki sirenaga o‘xshash tovush!"
+                                      else -> "🔊 Xonada juda baland shovqin aniqlandi!"
+                                  }
+                                  onAcousticAlert(reason, (rms / 320).toInt())
+                              }
+                          }
+                      } catch (_: Exception) {
+                      } finally {
+                          try {
+                              recorder?.stop()
+                              recorder?.release()
+                          } catch (_: Exception) {
+                          }
+                      }
+                  }.apply { isDaemon = true; start() }
+              }
+
+              fun stop() {
+                  running = false
+                  worker?.interrupt()
+                  worker = null
+              }
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/JpegToMp4Encoder.kt
+          package uz.qoriqlash.app
+
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import android.media.MediaCodec
+          import android.media.MediaCodecInfo
+          import android.media.MediaFormat
+          import android.media.MediaMuxer
+          import java.io.File
+
+          object JpegToMp4Encoder {
+
+              fun encodeFramesToMp4(jpegFrames: List<ByteArray>, outFile: File, fps: Int = 4): Boolean {
+                  if (jpegFrames.size < 2) return false
+                  val firstBmp = BitmapFactory.decodeByteArray(jpegFrames[0], 0, jpegFrames[0].size) ?: return false
+
+                  val width = ((firstBmp.width.coerceAtMost(640)) / 16) * 16
+                  val height = ((firstBmp.height.coerceAtMost(480)) / 16) * 16
+                  if (width < 64 || height < 64) return false
+
+                  var encoder: MediaCodec? = null
+                  var muxer: MediaMuxer? = null
+
+                  return try {
+                      val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                          setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+                          setInteger(MediaFormat.KEY_BIT_RATE, 900_000)
+                          setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                          setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                      }
+
+                      encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                      encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                      encoder.start()
+
+                      muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                      var trackIndex = -1
+                      val muxerState = BooleanArray(1) { false }
+                      val bufferInfo = MediaCodec.BufferInfo()
+                      val frameDurationUs = 1_000_000L / fps
+
+                      for (i in jpegFrames.indices) {
+                          val bmp = BitmapFactory.decodeByteArray(jpegFrames[i], 0, jpegFrames[i].size) ?: continue
+                          val scaled = Bitmap.createScaledBitmap(bmp, width, height, true)
+                          val yuv = bitmapToNv12(scaled, width, height)
+
+                          val inIdx = encoder.dequeueInputBuffer(10_000)
+                          if (inIdx >= 0) {
+                              val inBuf = encoder.getInputBuffer(inIdx)
+                              inBuf?.clear()
+                              inBuf?.put(yuv)
+                              encoder.queueInputBuffer(inIdx, 0, yuv.size, i * frameDurationUs, 0)
+                          }
+                          drainEncoder(encoder, muxer, bufferInfo, false, muxerState) { newTrack ->
+                              trackIndex = newTrack
+                          }
+                      }
+
+                      val eosIdx = encoder.dequeueInputBuffer(10_000)
+                      if (eosIdx >= 0) {
+                          encoder.queueInputBuffer(
+                              eosIdx, 0, 0,
+                              jpegFrames.size * frameDurationUs,
+                              MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                          )
+                      }
+                      drainEncoder(encoder, muxer, bufferInfo, true, muxerState) { newTrack ->
+                          trackIndex = newTrack
+                      }
+
+                      if (muxerState[0] && trackIndex >= 0) {
+                          muxer.stop()
+                      }
+                      outFile.exists() && outFile.length() > 1024
+                  } catch (_: Exception) {
+                      false
+                  } finally {
+                      try { encoder?.stop() } catch (_: Exception) {}
+                      try { encoder?.release() } catch (_: Exception) {}
+                      try { muxer?.release() } catch (_: Exception) {}
+                  }
+              }
+
+              private fun drainEncoder(
+                  encoder: MediaCodec,
+                  muxer: MediaMuxer,
+                  info: MediaCodec.BufferInfo,
+                  endOfStream: Boolean,
+                  muxerState: BooleanArray,
+                  onTrackAdded: (Int) -> Unit
+              ) {
+                  while (true) {
+                      val outIdx = encoder.dequeueOutputBuffer(info, 10_000)
+                      if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                          if (!endOfStream) break
+                      } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                          val track = muxer.addTrack(encoder.outputFormat)
+                          muxer.start()
+                          muxerState[0] = true
+                          onTrackAdded(track)
+                      } else if (outIdx >= 0) {
+                          val encoded = encoder.getOutputBuffer(outIdx) ?: continue
+                          if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                              info.size = 0
+                          }
+                          if (info.size > 0 && muxerState[0]) {
+                              encoded.position(info.offset)
+                              encoded.limit(info.offset + info.size)
+                              muxer.writeSampleData(0, encoded, info)
+                          }
+                          encoder.releaseOutputBuffer(outIdx, false)
+                          if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+                      }
+                  }
+              }
+
+              private fun bitmapToNv12(bmp: Bitmap, width: Int, height: Int): ByteArray {
+                  val argb = IntArray(width * height)
+                  bmp.getPixels(argb, 0, width, 0, 0, width, height)
+                  val yuv = ByteArray(width * height * 3 / 2)
+                  var yIndex = 0
+                  var uvIndex = width * height
+                  for (j in 0 until height) {
+                      for (i in 0 until width) {
+                          val c = argb[j * width + i]
+                          val r = (c shr 16) and 0xFF
+                          val g = (c shr 8) and 0xFF
+                          val b = c and 0xFF
+                          val y = ((66 * r + 129 * g + 25 * b + 128) shr 8) + 16
+                          yuv[yIndex++] = y.coerceIn(0, 255).toByte()
+                          if (j % 2 == 0 && i % 2 == 0 && uvIndex + 1 < yuv.size) {
+                              val u = ((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128
+                              val v = ((112 * r - 94 * g - 18 * b + 128) shr 8) + 128
+                              yuv[uvIndex++] = u.coerceIn(0, 255).toByte()
+                              yuv[uvIndex++] = v.coerceIn(0, 255).toByte()
+                          }
+                      }
+                  }
+                  return yuv
+              }
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/OfflineQueue.kt
+          package uz.qoriqlash.app
+
+          import android.content.Context
+          import org.json.JSONObject
+          import java.io.File
+
+          object OfflineQueue {
+              private const val MAX_ITEMS = 45
+
+              private fun dir(ctx: Context): File {
+                  val d = File(ctx.filesDir, "offline_alerts")
+                  if (!d.exists()) d.mkdirs()
+                  return d
+              }
+
+              @Synchronized
+              fun enqueuePhoto(ctx: Context, caption: String, jpegBytes: ByteArray) {
+                  try {
+                      val folder = dir(ctx)
+                      val existing = folder.listFiles { f -> f.extension == "jpg" }?.sortedBy { it.lastModified() } ?: emptyList()
+                      if (existing.size >= MAX_ITEMS) {
+                          val oldest = existing.first()
+                          File(folder, "${oldest.nameWithoutExtension}.json").delete()
+                          oldest.delete()
+                      }
+                      val stamp = System.currentTimeMillis().toString()
+                      File(folder, "$stamp.jpg").writeBytes(jpegBytes)
+                      val meta = JSONObject().apply {
+                          put("caption", caption)
+                          put("ts", stamp)
+                      }
+                      File(folder, "$stamp.json").writeText(meta.toString())
+                  } catch (_: Exception) {
+                  }
+              }
+
+              @Synchronized
+              fun size(ctx: Context): Int {
+                  return dir(ctx).listFiles { f -> f.extension == "jpg" }?.size ?: 0
+              }
+
+              @Synchronized
+              fun peekOldest(ctx: Context): Triple<File, File, String>? {
+                  val folder = dir(ctx)
+                  val oldest = folder.listFiles { f -> f.extension == "jpg" }?.minByOrNull { it.lastModified() } ?: return null
+                  val metaFile = File(folder, "${oldest.nameWithoutExtension}.json")
+                  val caption = try {
+                      if (metaFile.exists()) JSONObject(metaFile.readText()).optString("caption", "Oflayn xabar")
+                      else "Oflayn xabar"
+                  } catch (_: Exception) {
+                      "Oflayn xabar"
+                  }
+                  return Triple(oldest, metaFile, caption)
+              }
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/MonitorForegroundService.kt
+          package uz.qoriqlash.app
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.ImageFormat
+          import android.graphics.Matrix
+          import android.graphics.Paint
+          import android.graphics.Rect
+          import android.graphics.YuvImage
+          import android.hardware.Sensor
+          import android.hardware.SensorEvent
+          import android.hardware.SensorEventListener
+          import android.hardware.SensorManager
+          import android.media.AudioManager
+          import android.media.ToneGenerator
+          import android.os.BatteryManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.os.PowerManager
+          import androidx.camera.core.CameraSelector
+          import androidx.camera.core.ImageAnalysis
+          import androidx.camera.core.ImageProxy
+          import androidx.camera.core.Preview
+          import androidx.camera.lifecycle.ProcessCameraProvider
+          import androidx.core.app.NotificationCompat
+          import androidx.core.content.ContextCompat
+          import androidx.lifecycle.Lifecycle
+          import androidx.lifecycle.LifecycleOwner
+          import androidx.lifecycle.LifecycleRegistry
+          import com.google.android.gms.tasks.Tasks
+          import com.google.mlkit.vision.common.InputImage
+          import com.google.mlkit.vision.objects.ObjectDetection
+          import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
+          import okhttp3.MediaType.Companion.toMediaType
+          import okhttp3.MultipartBody
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import okhttp3.RequestBody.Companion.asRequestBody
+          import okhttp3.RequestBody.Companion.toRequestBody
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.ByteArrayOutputStream
+          import java.io.File
+          import java.text.SimpleDateFormat
+          import java.util.ArrayDeque
+          import java.util.Date
+          import java.util.Locale
+          import java.util.concurrent.ConcurrentHashMap
+          import java.util.concurrent.Executors
+          import java.util.concurrent.TimeUnit
+          import java.util.concurrent.atomic.AtomicBoolean
+          import java.util.concurrent.atomic.AtomicReference
+          import kotlin.math.abs
+          import kotlin.math.sqrt
+
+          class MonitorForegroundService : Service(), LifecycleOwner, SensorEventListener {
+
+              companion object {
+                  const val CHANNEL_ID = "qoriqlash_pro_channel"
+                  const val NOTIF_ID = 4109
+
+                  const val ACTION_START = "uz.qoriqlash.app.START"
+                  const val ACTION_STOP = "uz.qoriqlash.app.STOP"
+                  const val ACTION_BURST = "uz.qoriqlash.app.BURST"
+                  const val ACTION_SHOT = "uz.qoriqlash.app.SHOT"
+                  const val ACTION_VIDEO_NOW = "uz.qoriqlash.app.VIDEO_NOW"
+                  const val ACTION_CLEAR_LOG = "uz.qoriqlash.app.CLEAR_LOG"
+
+                  @Volatile var isRunning = false
+                  @Volatile var isBurstRunning = false
+                  @Volatile var burstSentCount = 0
+                  @Volatile var lastStatusText = "Tayyor"
+                  @Volatile var eventsJson = "[]"
+                  @Volatile var lastRecognizedPerson = ""
+                  @Volatile var countEnterToday = 0
+                  @Volatile var countExitToday = 0
+
+                  val previewSurfaceProvider = AtomicReference<Preview.SurfaceProvider?>(null)
+                  val uiVisible = AtomicBoolean(false)
+                  val latestFullJpeg = AtomicReference<ByteArray?>(null)
+                  val latestIpPreviewJpeg = AtomicReference<ByteArray?>(null)
+
+                  val ipGridFrames = ConcurrentHashMap<String, ByteArray>()
+                  val ipGridMeta = ConcurrentHashMap<String, JSONObject>()
+
+                  @Volatile private var activeInstance: MonitorForegroundService? = null
+
+                  fun rebindCameraIfRunning() {
+                      activeInstance?.let { svc ->
+                          Handler(Looper.getMainLooper()).post { svc.bindPhoneCamera() }
+                      }
+                  }
+
+                  fun buildGridSnapshotJson(): String {
+                      val arr = JSONArray()
+                      val sortedKeys = ipGridMeta.keys.toList().sorted()
+                      for (key in sortedKeys) {
+                          val meta = ipGridMeta[key] ?: continue
+                          val bytes = ipGridFrames[key]
+                          val item = JSONObject(meta.toString())
+                          item.put("b64", if (bytes != null && bytes.isNotEmpty()) {
+                              android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                          } else "")
+                          arr.put(item)
+                      }
+                      return arr.toString()
+                  }
+              }
+
+              private lateinit var lifecycleRegistry: LifecycleRegistry
+              override val lifecycle: Lifecycle get() = lifecycleRegistry
+
+              private val mainHandler = Handler(Looper.getMainLooper())
+              private val cameraExecutor = Executors.newSingleThreadExecutor()
+              private val networkExecutor = Executors.newCachedThreadPool()
+
+              private val httpClient = OkHttpClient.Builder()
+                  .connectTimeout(7, TimeUnit.SECONDS)
+                  .readTimeout(12, TimeUnit.SECONDS)
+                  .writeTimeout(15, TimeUnit.SECONDS)
+                  .build()
+
+              private val objectDetector by lazy {
+                  val opts = ObjectDetectorOptions.Builder()
+                      .setDetectorMode(ObjectDetectorOptions.SINGLE_IMAGE_MODE)
+                      .enableClassification()
+                      .build()
+                  ObjectDetection.getClient(opts)
+              }
+
+              private var wakeLock: PowerManager.WakeLock? = null
+              private var cameraProvider: ProcessCameraProvider? = null
+              private var activeCameraLens = "back"
+              private var prevPhoneGray: ByteArray? = null
+              private val prevIpGrayMap = ConcurrentHashMap<String, ByteArray>()
+              private val lastAlertMsMap = ConcurrentHashMap<String, Long>()
+              @Volatile private var lastFrameConvertMs = 0L
+
+              private val ringBufferLock = Any()
+              private val rollingFrames = ArrayDeque<ByteArray>()
+              private val recordingClip = AtomicBoolean(false)
+
+              private var sensorManager: SensorManager? = null
+              private var lastAccel = 9.8f
+              private var lastTamperMs = 0L
+              private var wasCharging = false
+              private var lastPowerAlertMs = 0L
+
+              private var audioDetector: DangerAudioDetector? = null
+              private var manualStopped = false
+              private var lastTrackedCenterX = -1f
+
+              private val eventsList = mutableListOf<JSONObject>()
+
+              private val burstRunnable = object : Runnable {
+                  override fun run() {
+                      if (!isRunning || !isBurstRunning) return
+                      val cfg = SecureStore.loadConfig(this@MonitorForegroundService)
+                      val sec = cfg.optInt("burstSec", 10).coerceIn(3, 3600)
+                      captureAndSendBurst(cfg)
+                      mainHandler.postDelayed(this, sec * 1000L)
+                  }
+              }
+
+              private val ipPollRunnable = object : Runnable {
+                  override fun run() {
+                      if (!isRunning) return
+                      val cfg = SecureStore.loadConfig(this@MonitorForegroundService)
+                      val sec = cfg.optInt("ipSec", 3).coerceIn(1, 300)
+                      pollAllIpCameras(cfg)
+                      mainHandler.postDelayed(this, sec * 1000L)
+                  }
+              }
+
+              private val botPollRunnable = object : Runnable {
+                  override fun run() {
+                      if (!isRunning) return
+                      val cfg = SecureStore.loadConfig(this@MonitorForegroundService)
+                      pollTelegramCommands(cfg)
+                      flushOfflineQueue(cfg)
+                      mainHandler.postDelayed(this, 3500L)
+                  }
+              }
+
+              private val remoteSyncRunnable = object : Runnable {
+                  override fun run() {
+                      networkExecutor.execute {
+                          val active = SecureStore.isRemoteActive(this@MonitorForegroundService)
+                          val state = RemoteControlClient.syncNow(
+                              this@MonitorForegroundService,
+                              active && !manualStopped
+                          )
+                          if (!state.active && isRunning) {
+                              mainHandler.post {
+                                  addEvent("⛔ Admin tomonidan obuna to‘xtatildi: ${state.message}")
+                                  stopSelf()
+                              }
+                          }
+                      }
+                      mainHandler.postDelayed(this, 45_000L)
+                  }
+              }
+
+              override fun onCreate() {
+                  super.onCreate()
+                  activeInstance = this
+                  lifecycleRegistry = LifecycleRegistry(this)
+                  lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+                  lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+                  lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+                  createNotificationChannel()
+                  acquireWakeLock()
+
+                  val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                  val saved = SecureStore.loadCounts(this, today)
+                  countEnterToday = saved.first
+                  countExitToday = saved.second
+
+                  sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+                  sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { acc ->
+                      sensorManager?.registerListener(this, acc, SensorManager.SENSOR_DELAY_NORMAL)
+                  }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  val action = intent?.action ?: ACTION_START
+                  when (action) {
+                      ACTION_START -> {
+                          if (!SecureStore.isRemoteActive(this)) {
+                              stopSelf()
+                              return START_NOT_STICKY
+                          }
+                          manualStopped = false
+                          startForeground(NOTIF_ID, buildNotification("Qo‘riqlash tizimi faol"))
+                          isRunning = true
+                          SecureStore.setWasRunning(this, true)
+                          val cfg = SecureStore.loadConfig(this)
+                          applyConfiguration(cfg)
+                          addEvent("🛡 Qo‘riqlash Pro tizimi ishga tushdi")
+                      }
+                      ACTION_STOP -> {
+                          manualStopped = true
+                          isRunning = false
+                          isBurstRunning = false
+                          SecureStore.setWasRunning(this, false)
+                          stopAllLoops()
+                          addEvent("⏹ Qo‘riqlash to‘xtatildi")
+                          stopForeground(STOP_FOREGROUND_REMOVE)
+                          stopSelf()
+                      }
+                      ACTION_BURST -> {
+                          val enable = intent?.getBooleanExtra("enable", false) ?: false
+                          isBurstRunning = enable
+                          mainHandler.removeCallbacks(burstRunnable)
+                          if (enable && isRunning) {
+                              burstSentCount = 0
+                              mainHandler.post(burstRunnable)
+                              addEvent("⏱ Oraliq rasm yuborish yoqildi")
+                          } else {
+                              addEvent("⏹ Oraliq rasm yuborish to‘xtatildi")
+                          }
+                      }
+                      ACTION_SHOT -> {
+                          val cfg = SecureStore.loadConfig(this)
+                          sendInstantSnapshot(cfg, "📸 Qo‘lda so‘ralgan oniy rasm")
+                      }
+                      ACTION_VIDEO_NOW -> {
+                          val cfg = SecureStore.loadConfig(this)
+                          triggerVideoClip(cfg, "🎥 Qo‘lda yozilgan 10 soniyali video")
+                      }
+                      ACTION_CLEAR_LOG -> {
+                          synchronized(eventsList) {
+                              eventsList.clear()
+                              eventsJson = "[]"
+                          }
+                      }
+                  }
+                  return START_STICKY
+              }
+
+              private fun applyConfiguration(cfg: JSONObject) {
+                  val mode = cfg.optString("mode", "phone")
+                  val lens = cfg.optString("lens", "back")
+                  val burstOn = cfg.optBoolean("burst", false)
+                  val audioOn = cfg.optBoolean("audioAlert", true)
+
+                  lastStatusText = "Faol ($mode)"
+                  updateNotification("Qo‘riqlash faol · Kirish:$countEnterToday Chiqish:$countExitToday")
+
+                  if (mode == "phone" || mode == "both") {
+                      activeCameraLens = lens
+                      bindPhoneCamera()
+                  } else {
+                      unbindPhoneCamera()
+                  }
+
+                  mainHandler.removeCallbacks(ipPollRunnable)
+                  if (mode == "ip" || mode == "both") {
+                      mainHandler.post(ipPollRunnable)
+                  }
+
+                  mainHandler.removeCallbacks(burstRunnable)
+                  isBurstRunning = burstOn
+                  if (burstOn) {
+                      mainHandler.postDelayed(burstRunnable, 1500L)
+                  }
+
+                  audioDetector?.stop()
+                  if (audioOn) {
+                      audioDetector = DangerAudioDetector { reason, _ ->
+                          if (!isRunning) return@DangerAudioDetector
+                          val c = SecureStore.loadConfig(this)
+                          if (!isWithinSchedule(c)) return@DangerAudioDetector
+                          addEvent(reason)
+                          val frame = latestFullJpeg.get()
+                          if (frame != null) {
+                              sendPhotoWithFallback(c, frame, "🚨 TOVUSH TREVOGASI!\n$reason")
+                          } else {
+                              sendTelegramText(c, "🚨 TOVUSH TREVOGASI!\n$reason")
+                          }
+                          triggerVideoClip(c, reason)
+                      }.also { it.start() }
+                  }
+
+                  mainHandler.removeCallbacks(botPollRunnable)
+                  mainHandler.postDelayed(botPollRunnable, 2000L)
+
+                  mainHandler.removeCallbacks(remoteSyncRunnable)
+                  mainHandler.postDelayed(remoteSyncRunnable, 5000L)
+              }
+
+              private fun stopAllLoops() {
+                  mainHandler.removeCallbacks(burstRunnable)
+                  mainHandler.removeCallbacks(ipPollRunnable)
+                  mainHandler.removeCallbacks(botPollRunnable)
+                  mainHandler.removeCallbacks(remoteSyncRunnable)
+                  audioDetector?.stop()
+                  unbindPhoneCamera()
+              }
+
+              private fun bindPhoneCamera() {
+                  val future = ProcessCameraProvider.getInstance(this)
+                  future.addListener({
+                      try {
+                          val provider = future.get()
+                          cameraProvider = provider
+                          provider.unbindAll()
+                          if (!isRunning) return@addListener
+
+                          val selector = if (activeCameraLens == "front") {
+                              CameraSelector.DEFAULT_FRONT_CAMERA
+                          } else {
+                              CameraSelector.DEFAULT_BACK_CAMERA
+                          }
+
+                          val analysis = ImageAnalysis.Builder()
+                              .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                              .build()
+
+                          analysis.setAnalyzer(cameraExecutor) { image ->
+                              processPhoneFrame(image)
+                          }
+
+                          val sp = previewSurfaceProvider.get()
+                          if (uiVisible.get() && sp != null) {
+                              val preview = Preview.Builder().build().also { it.setSurfaceProvider(sp) }
+                              provider.bindToLifecycle(this, selector, preview, analysis)
+                          } else {
+                              provider.bindToLifecycle(this, selector, analysis)
+                          }
+                      } catch (e: Exception) {
+                          addEvent("⚠️ Telefon kamerasi xatosi: ${e.message}")
+                      }
+                  }, ContextCompat.getMainExecutor(this))
+              }
+
+              private fun unbindPhoneCamera() {
+                  try {
+                      cameraProvider?.unbindAll()
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun processPhoneFrame(image: ImageProxy) {
+                  try {
+                      if (!isRunning) return
+                      val cfg = SecureStore.loadConfig(this)
+                      val mode = cfg.optString("mode", "phone")
+                      if (mode != "phone" && mode != "both") return
+
+                      val yPlane = image.planes[0]
+                      val yBuf = yPlane.buffer
+                      val rowStride = yPlane.rowStride
+                      val w = image.width
+                      val h = image.height
+
+                      val gridW = 64
+                      val gridH = 48
+                      val currGray = ByteArray(gridW * gridH)
+                      var brightnessSum = 0L
+                      var idx = 0
+                      for (gy in 0 until gridH) {
+                          val sy = (gy * h) / gridH
+                          val rowOffset = sy * rowStride
+                          for (gx in 0 until gridW) {
+                              val sx = (gx * w) / gridW
+                              val pos = rowOffset + sx
+                              val v = if (pos < yBuf.limit()) (yBuf.get(pos).toInt() and 0xFF) else 0
+                              currGray[idx++] = v.toByte()
+                              brightnessSum += v
+                          }
+                      }
+
+                      val nowMs = System.currentTimeMillis()
+                      val needJpegNow = (nowMs - lastFrameConvertMs >= 320L) || recordingClip.get()
+                      var jpegBytes: ByteArray? = latestFullJpeg.get()
+                      if (needJpegNow) {
+                          val fresh = imageProxyToJpeg(image, 76)
+                          if (fresh != null) {
+                              lastFrameConvertMs = nowMs
+                              jpegBytes = fresh
+                              latestFullJpeg.set(fresh)
+                              synchronized(ringBufferLock) {
+                                  if (rollingFrames.size >= 40) rollingFrames.removeFirst()
+                                  rollingFrames.addLast(fresh)
+                              }
+                          }
+                      }
+
+                      val avgBrightness = brightnessSum / (gridW * gridH)
+                      if (cfg.optBoolean("tamperAlert", true) && avgBrightness < 10) {
+                          if (nowMs - lastTamperMs > 30_000L && isWithinSchedule(cfg)) {
+                              lastTamperMs = nowMs
+                              addEvent("🕶 Kamera obyektivi yopildi yoki qorong‘ilashdi!")
+                              val snap = imageProxyToJpeg(image, 78) ?: jpegBytes
+                              if (snap != null) {
+                                  sendPhotoWithFallback(cfg, snap, "🚨 BUZG‘UNCHILIK!\nKamera obyektivi to‘sib qo‘yildi!")
+                              }
+                          }
+                      }
+
+                      if (!isWithinSchedule(cfg)) {
+                          prevPhoneGray = currGray
+                          return
+                      }
+
+                      val prev = prevPhoneGray
+                      prevPhoneGray = currGray
+                      if (prev == null) return
+
+                      val sens = cfg.optInt("sens", 28).coerceIn(5, 95)
+                      val pixelThresh = (110 - sens).coerceIn(12, 85)
+                      val ratioThresh = ((105 - sens) * 0.0018).coerceIn(0.015, 0.25)
+
+                      var changed = 0
+                      for (i in currGray.indices) {
+                          val d = abs((currGray[i].toInt() and 0xFF) - (prev[i].toInt() and 0xFF))
+                          if (d > pixelThresh) changed++
+                      }
+                      val ratio = changed.toDouble() / currGray.size.toDouble()
+                      if (ratio >= ratioThresh) {
+                          val cool = cfg.optInt("cool", 10).coerceIn(3, 600)
+                          val last = lastAlertMsMap["phone"] ?: 0L
+                          if (nowMs - last >= cool * 1000L) {
+                              lastAlertMsMap["phone"] = nowMs
+                              val alertJpeg = imageProxyToJpeg(image, 80) ?: jpegBytes
+                              if (alertJpeg != null) {
+                                  latestFullJpeg.set(alertJpeg)
+                                  handleMotionWithAiAndZoom(cfg, "Telefon kamerasi", alertJpeg, ratio, isPhone = true)
+                              }
+                          }
+                      }
+                  } catch (_: Exception) {
+                  } finally {
+                      image.close()
+                  }
+              }
+
+              private fun handleMotionWithAiAndZoom(
+                  cfg: JSONObject,
+                  sourceName: String,
+                  rawJpeg: ByteArray,
+                  motionRatio: Double,
+                  isPhone: Boolean
+              ) {
+                  val bmp = BitmapFactory.decodeByteArray(rawJpeg, 0, rawJpeg.size) ?: return
+                  val pct = (motionRatio * 100).toInt().coerceIn(1, 100)
+
+                  val faceScan = FaceProfileManager.analyzeBitmap(this, bmp)
+                  if (faceScan.totalFaces > 0 && faceScan.unknownCount == 0 && faceScan.knownNames.isNotEmpty()) {
+                      val names = faceScan.knownNames.distinct().joinToString(", ")
+                      lastRecognizedPerson = names
+                      addEvent("😊 Tanish odam aniqlandi: $names (Signal yuborilmadi)")
+                      return
+                  }
+
+                  val objRes = detectObjectBox(bmp)
+                  val label = when {
+                      faceScan.unknownCount > 0 -> "🚨 NOTANISH SHAXS (${faceScan.unknownCount} kishi)"
+                      objRes.first.isNotEmpty() -> objRes.first
+                      else -> "Harakat aniqlandi"
+                  }
+
+                  val targetBox = faceScan.primaryBox ?: objRes.second
+                  if (isPhone && targetBox != null && cfg.optBoolean("doorCounter", true)) {
+                      val cx = targetBox.centerX().toFloat() / bmp.width.toFloat()
+                      if (lastTrackedCenterX >= 0f) {
+                          if (lastTrackedCenterX < 0.45f && cx > 0.55f) {
+                              countEnterToday++
+                              saveTodayCounts()
+                          } else if (lastTrackedCenterX > 0.55f && cx < 0.45f) {
+                              countExitToday++
+                              saveTodayCounts()
+                          }
+                      }
+                      lastTrackedCenterX = cx
+                      updateNotification("Faol · Kirish:$countEnterToday Chiqish:$countExitToday")
+                  }
+
+                  val annotatedJpeg = if (cfg.optBoolean("autoZoom", true) && targetBox != null) {
+                      createZoomedAnnotatedJpeg(bmp, targetBox, label) ?: rawJpeg
+                  } else {
+                      rawJpeg
+                  }
+
+                  if (cfg.optBoolean("siren", false)) {
+                      playLocalAlarmBeep()
+                  }
+
+                  val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                  val caption = buildString {
+                      appendLine("🚨 XAVF SIGNALI · $sourceName")
+                      appendLine("🔍 Tahlil: $label ($pct%)")
+                      if (faceScan.knownNames.isNotEmpty()) {
+                          appendLine("👤 Yonida tanish: ${faceScan.knownNames.joinToString(", ")}")
+                      }
+                      appendLine("📊 Bugun: Kirish $countEnterToday | Chiqish $countExitToday")
+                      append("🕒 Vaqt: $timeStr")
+                  }
+
+                  addEvent("$sourceName: $label ($pct%)")
+                  sendPhotoWithFallback(cfg, annotatedJpeg, caption)
+
+                  if (isPhone && cfg.optBoolean("autoVideo", true)) {
+                      triggerVideoClip(cfg, "$sourceName: $label")
+                  }
+              }
+
+              private fun detectObjectBox(bmp: Bitmap): Pair<String, Rect?> {
+                  return try {
+                      val img = InputImage.fromBitmap(bmp, 0)
+                      val objects = Tasks.await(objectDetector.process(img))
+                      if (objects.isEmpty()) return "" to null
+                      val best = objects.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }!!
+                      val cat = best.labels.maxByOrNull { it.confidence }?.text ?: ""
+                      val uzLabel = when {
+                          cat.contains("Fashion", true) -> "Odam / Kiyim"
+                          cat.contains("Home", true) -> "Buyum harakati"
+                          cat.contains("Food", true) -> "Obyekt"
+                          else -> "Harakatdagi obyekt"
+                      }
+                      uzLabel to best.boundingBox
+                  } catch (_: Exception) {
+                      "" to null
+                  }
+              }
+
+              private fun createZoomedAnnotatedJpeg(src: Bitmap, box: Rect, label: String): ByteArray? {
+                  return try {
+                      val padX = (box.width() * 0.45f).toInt()
+                      val padY = (box.height() * 0.45f).toInt()
+                      val left = (box.left - padX).coerceIn(0, src.width - 1)
+                      val top = (box.top - padY).coerceIn(0, src.height - 1)
+                      val right = (box.right + padX).coerceIn(left + 1, src.width)
+                      val bottom = (box.bottom + padY).coerceIn(top + 1, src.height)
+
+                      val cropped = Bitmap.createBitmap(src, left, top, right - left, bottom - top)
+                          .copy(Bitmap.Config.ARGB_8888, true)
+
+                      val canvas = Canvas(cropped)
+                      val paint = Paint().apply {
+                          color = Color.RED
+                          style = Paint.Style.STROKE
+                          strokeWidth = (cropped.width * 0.012f).coerceAtLeast(4f)
+                      }
+                      val relBox = Rect(
+                          (box.left - left).coerceAtLeast(2),
+                          (box.top - top).coerceAtLeast(2),
+                          (box.right - left).coerceAtMost(cropped.width - 2),
+                          (box.bottom - top).coerceAtMost(cropped.height - 2)
+                      )
+                      canvas.drawRect(relBox, paint)
+
+                      val textPaint = Paint().apply {
+                          color = Color.YELLOW
+                          textSize = (cropped.width * 0.045f).coerceIn(18f, 42f)
+                          isFakeBoldText = true
+                      }
+                      canvas.drawText("ZOOM: $label", 14f, textPaint.textSize + 10f, textPaint)
+
+                      val out = ByteArrayOutputStream()
+                      cropped.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                      out.toByteArray()
+                  } catch (_: Exception) {
+                      null
+                  }
+              }
+
+              private fun triggerVideoClip(cfg: JSONObject, reason: String) {
+                  if (recordingClip.getAndSet(true)) return
+                  networkExecutor.execute {
+                      try {
+                          val collected = mutableListOf<ByteArray>()
+                          synchronized(ringBufferLock) {
+                              collected.addAll(rollingFrames.toList().takeLast(16))
+                          }
+                          val startMs = System.currentTimeMillis()
+                          while (System.currentTimeMillis() - startMs < 6500L && collected.size < 40 && isRunning) {
+                              Thread.sleep(250L)
+                              latestFullJpeg.get()?.let { f ->
+                                  if (collected.isEmpty() || collected.last() !== f) {
+                                      collected.add(f)
+                                  }
+                              }
+                          }
+                          if (collected.size >= 4) {
+                              val tmpMp4 = File(cacheDir, "alert_${System.currentTimeMillis()}.mp4")
+                              val ok = JpegToMp4Encoder.encodeFramesToMp4(collected, tmpMp4, fps = 4)
+                              if (ok) {
+                                  sendTelegramVideo(cfg, tmpMp4, "🎥 10 SONIYALI VIDEO DALIL\n$reason")
+                              }
+                              tmpMp4.delete()
+                          }
+                      } catch (_: Exception) {
+                      } finally {
+                          recordingClip.set(false)
+                      }
+                  }
+              }
+
+              private fun collectAllIpChannels(cfg: JSONObject): List<JSONObject> {
+                  val channels = mutableListOf<JSONObject>()
+                  val devices = cfg.optJSONArray("devices") ?: JSONArray()
+                  for (d in 0 until devices.length()) {
+                      val dev = devices.optJSONObject(d) ?: continue
+                      val devName = dev.optString("name", "Kamera #${d + 1}")
+                      val type = dev.optString("type", "hikvision")
+                      val ip = dev.optString("ip", "").trim()
+                      val port = dev.optString("port", "80").trim().ifEmpty { "80" }
+                      val user = dev.optString("user", "")
+                      val pass = dev.optString("pass", "")
+                      val customUrl = dev.optString("customUrl", "").trim()
+                      val chList = dev.optString("channels", "1").split(",")
+
+                      if (type == "url" && customUrl.isNotEmpty()) {
+                          channels.add(JSONObject().apply {
+                              put("key", "dev_${d}_url")
+                              put("title", devName)
+                              put("url", customUrl)
+                              put("user", user)
+                              put("pass", pass)
+                          })
+                          continue
+                      }
+
+                      if (ip.isEmpty()) continue
+                      val base = if (ip.startsWith("http://") || ip.startsWith("https://")) ip else "http://$ip:$port"
+
+                      for (rawCh in chList) {
+                          val chNum = rawCh.trim().toIntOrNull() ?: continue
+                          val url = when (type) {
+                              "dahua" -> "$base/cgi-bin/snapshot.cgi?channel=$chNum"
+                              else -> "$base/ISAPI/Streaming/channels/${chNum}01/picture"
+                          }
+                          channels.add(JSONObject().apply {
+                              put("key", "dev_${d}_ch_$chNum")
+                              put("title", "$devName · CH$chNum")
+                              put("url", url)
+                              put("user", user)
+                              put("pass", pass)
+                          })
+                      }
+                  }
+                  return channels
+              }
+
+              private fun pollAllIpCameras(cfg: JSONObject) {
+                  val channels = collectAllIpChannels(cfg)
+                  val validKeys = channels.map { it.optString("key") }.toSet()
+                  ipGridMeta.keys.retainAll(validKeys)
+                  ipGridFrames.keys.retainAll(validKeys)
+
+                  for (chObj in channels) {
+                      val key = chObj.optString("key")
+                      val title = chObj.optString("title")
+                      val url = chObj.optString("url")
+                      val user = chObj.optString("user")
+                      val pass = chObj.optString("pass")
+
+                      networkExecutor.execute {
+                          try {
+                              val bytes = CameraAuthClient.fetchSnapshotBytes(url, user, pass)
+                              val meta = JSONObject().apply {
+                                  put("key", key)
+                                  put("title", title)
+                                  put("online", bytes != null && bytes.isNotEmpty())
+                                  put("ts", System.currentTimeMillis())
+                              }
+                              ipGridMeta[key] = meta
+
+                              if (bytes == null || bytes.isEmpty()) return@execute
+                              ipGridFrames[key] = bytes
+                              latestIpPreviewJpeg.set(bytes)
+
+                              val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@execute
+                              val currGray = bitmapToGray64x48(bmp)
+                              val prev = prevIpGrayMap.put(key, currGray)
+                              if (prev == null || !isWithinSchedule(cfg)) return@execute
+
+                              val sens = cfg.optInt("sens", 28).coerceIn(5, 95)
+                              val pixelThresh = (110 - sens).coerceIn(12, 85)
+                              val ratioThresh = ((105 - sens) * 0.0018).coerceIn(0.015, 0.25)
+
+                              var changed = 0
+                              for (i in currGray.indices) {
+                                  val d = abs((currGray[i].toInt() and 0xFF) - (prev[i].toInt() and 0xFF))
+                                  if (d > pixelThresh) changed++
+                              }
+                              val ratio = changed.toDouble() / currGray.size.toDouble()
+                              if (ratio >= ratioThresh) {
+                                  val cool = cfg.optInt("cool", 10).coerceIn(3, 600)
+                                  val now = System.currentTimeMillis()
+                                  val last = lastAlertMsMap[key] ?: 0L
+                                  if (now - last >= cool * 1000L) {
+                                      lastAlertMsMap[key] = now
+                                      handleMotionWithAiAndZoom(cfg, title, bytes, ratio, isPhone = false)
+                                  }
+                              }
+                          } catch (_: Exception) {
+                          }
+                      }
+                  }
+              }
+
+              private fun captureAndSendBurst(cfg: JSONObject) {
+                  val mode = cfg.optString("mode", "phone")
+                  if (mode == "phone" || mode == "both") {
+                      latestFullJpeg.get()?.let { jpeg ->
+                          burstSentCount++
+                          val t = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                          sendPhotoWithFallback(cfg, jpeg, "⏱ Oraliq kadr #$burstSentCount (Telefon) · $t")
+                      }
+                  }
+                  if (mode == "ip" || mode == "both") {
+                      for ((key, jpeg) in ipGridFrames) {
+                          val title = ipGridMeta[key]?.optString("title", "IP Kamera") ?: "IP Kamera"
+                          burstSentCount++
+                          val t = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                          sendPhotoWithFallback(cfg, jpeg, "⏱ Oraliq kadr #$burstSentCount ($title) · $t")
+                      }
+                  }
+              }
+
+              private fun sendInstantSnapshot(cfg: JSONObject, title: String) {
+                  val phoneFrame = latestFullJpeg.get()
+                  if (phoneFrame != null) {
+                      sendPhotoWithFallback(cfg, phoneFrame, "$title (Telefon)")
+                  }
+                  for ((key, jpeg) in ipGridFrames) {
+                      val camName = ipGridMeta[key]?.optString("title", "IP Kamera") ?: "IP Kamera"
+                      sendPhotoWithFallback(cfg, jpeg, "$title ($camName)")
+                  }
+                  if (phoneFrame == null && ipGridFrames.isEmpty()) {
+                      sendTelegramText(cfg, "⚠️ Hali kadr tayyor emas. Avval nazoratni yoqing.")
+                  }
+              }
+
+              private fun pollTelegramCommands(cfg: JSONObject) {
+                  val token = cfg.optString("token", "").trim()
+                  val allowedChatId = cfg.optString("chatId", "").trim()
+                  if (token.isEmpty() || allowedChatId.isEmpty()) return
+
+                  networkExecutor.execute {
+                      try {
+                          val offset = SecureStore.getLastUpdateId(this) + 1
+                          val req = Request.Builder()
+                              .url("https://api.telegram.org/bot$token/getUpdates?offset=$offset&timeout=1")
+                              .build()
+                          httpClient.newCall(req).execute().use { resp ->
+                              if (!resp.isSuccessful) return@use
+                              val root = JSONObject(resp.body?.string() ?: "")
+                              if (!root.optBoolean("ok", false)) return@use
+                              val arr = root.optJSONArray("result") ?: return@use
+                              var maxId = offset - 1
+                              for (i in 0 until arr.length()) {
+                                  val upd = arr.optJSONObject(i) ?: continue
+                                  val uid = upd.optLong("update_id", 0L)
+                                  if (uid > maxId) maxId = uid
+                                  val msg = upd.optJSONObject("message") ?: continue
+                                  val chatId = msg.optJSONObject("chat")?.optLong("id", 0L)?.toString() ?: ""
+                                  if (chatId != allowedChatId) continue
+                                  val text = msg.optString("text", "").trim().lowercase()
+                                  handleTelegramBotCommand(cfg, text)
+                              }
+                              if (maxId >= offset) {
+                                  SecureStore.setLastUpdateId(this, maxId)
+                              }
+                          }
+                      } catch (_: Exception) {
+                      }
+                  }
+              }
+
+              private fun handleTelegramBotCommand(cfg: JSONObject, cmd: String) {
+                  when {
+                      cmd.startsWith("/rasm") -> {
+                          addEvent("📲 Telegram buyrug‘i: /rasm")
+                          sendInstantSnapshot(cfg, "📸 Telegram buyrug‘i bo‘yicha rasm")
+                      }
+                      cmd.startsWith("/video") -> {
+                          addEvent("📲 Telegram buyrug‘i: /video")
+                          sendTelegramText(cfg, "🎥 10 soniyali video yozilmoqda...")
+                          triggerVideoClip(cfg, "Telegram /video buyrug‘i")
+                      }
+                      cmd.startsWith("/holat") -> {
+                          val bat = getBatteryPercent()
+                          val qSize = OfflineQueue.size(this)
+                          val chCount = ipGridMeta.size
+                          val statusMsg = buildString {
+                              appendLine("🛡 QO‘RIQLASH PRO HOLATI")
+                              appendLine("• Holat: ${if (isRunning) "FAOL ✅" else "TO‘XTATILGAN ⛔"}")
+                              appendLine("• Ulangan IP kanallar: $chCount ta")
+                              appendLine("• Batareya: $bat%")
+                              appendLine("• Bugun kirish/chiqish: $countEnterToday / $countExitToday")
+                              append("• Oflayn navbat: $qSize ta rasm")
+                          }
+                          sendTelegramText(cfg, statusMsg)
+                      }
+                      cmd.startsWith("/ochir") -> {
+                          sendTelegramText(cfg, "⏹ Qo‘riqlash masofadan to‘xtatildi.")
+                          mainHandler.post {
+                              startService(Intent(this, MonitorForegroundService::class.java).apply {
+                                  action = ACTION_STOP
+                              })
+                          }
+                      }
+                      cmd.startsWith("/yoq") -> {
+                          sendTelegramText(cfg, "🛡 Qo‘riqlash masofadan qayta yoqildi.")
+                          mainHandler.post {
+                              applyConfiguration(SecureStore.loadConfig(this))
+                          }
+                      }
+                  }
+              }
+
+              private fun sendPhotoWithFallback(cfg: JSONObject, jpegBytes: ByteArray, caption: String) {
+                  val token = cfg.optString("token", "").trim()
+                  val chatId = cfg.optString("chatId", "").trim()
+                  if (token.isEmpty() || chatId.isEmpty()) return
+
+                  networkExecutor.execute {
+                      val sent = uploadPhotoDirect(token, chatId, jpegBytes, caption)
+                      if (!sent) {
+                          OfflineQueue.enqueuePhoto(this, caption, jpegBytes)
+                      }
+                  }
+              }
+
+              private fun flushOfflineQueue(cfg: JSONObject) {
+                  val token = cfg.optString("token", "").trim()
+                  val chatId = cfg.optString("chatId", "").trim()
+                  if (token.isEmpty() || chatId.isEmpty()) return
+                  if (OfflineQueue.size(this) == 0) return
+
+                  networkExecutor.execute {
+                      val item = OfflineQueue.peekOldest(this) ?: return@execute
+                      val bytes = try { item.first.readBytes() } catch (_: Exception) { return@execute }
+                      val ok = uploadPhotoDirect(token, chatId, bytes, "📦 [OFLAYN ARXIV]\n${item.third}")
+                      if (ok) {
+                          item.first.delete()
+                          item.second.delete()
+                      }
+                  }
+              }
+
+              private fun uploadPhotoDirect(token: String, chatId: String, jpegBytes: ByteArray, caption: String): Boolean {
+                  return try {
+                      val body = MultipartBody.Builder()
+                          .setType(MultipartBody.FORM)
+                          .addFormDataPart("chat_id", chatId)
+                          .addFormDataPart("caption", caption)
+                          .addFormDataPart(
+                              "photo",
+                              "guard_${System.currentTimeMillis()}.jpg",
+                              jpegBytes.toRequestBody("image/jpeg".toMediaType())
+                          )
+                          .build()
+                      val req = Request.Builder()
+                          .url("https://api.telegram.org/bot$token/sendPhoto")
+                          .post(body)
+                          .build()
+                      httpClient.newCall(req).execute().use { it.isSuccessful }
+                  } catch (_: Exception) {
+                      false
+                  }
+              }
+
+              private fun sendTelegramVideo(cfg: JSONObject, mp4File: File, caption: String) {
+                  val token = cfg.optString("token", "").trim()
+                  val chatId = cfg.optString("chatId", "").trim()
+                  if (token.isEmpty() || chatId.isEmpty() || !mp4File.exists()) return
+                  try {
+                      val body = MultipartBody.Builder()
+                          .setType(MultipartBody.FORM)
+                          .addFormDataPart("chat_id", chatId)
+                          .addFormDataPart("caption", caption)
+                          .addFormDataPart("video", mp4File.name, mp4File.asRequestBody("video/mp4".toMediaType()))
+                          .build()
+                      val req = Request.Builder()
+                          .url("https://api.telegram.org/bot$token/sendVideo")
+                          .post(body)
+                          .build()
+                      httpClient.newCall(req).execute().close()
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun sendTelegramText(cfg: JSONObject, text: String) {
+                  val token = cfg.optString("token", "").trim()
+                  val chatId = cfg.optString("chatId", "").trim()
+                  if (token.isEmpty() || chatId.isEmpty()) return
+                  networkExecutor.execute {
+                      try {
+                          val json = JSONObject().apply {
+                              put("chat_id", chatId)
+                              put("text", text)
+                          }
+                          val req = Request.Builder()
+                              .url("https://api.telegram.org/bot$token/sendMessage")
+                              .post(json.toString().toRequestBody("application/json".toMediaType()))
+                              .build()
+                          httpClient.newCall(req).execute().close()
+                      } catch (_: Exception) {
+                      }
+                  }
+              }
+
+              override fun onSensorChanged(event: SensorEvent?) {
+                  if (event?.sensor?.type != Sensor.TYPE_ACCELEROMETER || !isRunning) return
+                  val x = event.values[0]
+                  val y = event.values[1]
+                  val z = event.values[2]
+                  val g = sqrt(x * x + y * y + z * z)
+                  val delta = abs(g - lastAccel)
+                  lastAccel = g
+
+                  val cfg = SecureStore.loadConfig(this)
+                  if (cfg.optBoolean("tamperAlert", true) && delta > 7.5f && isWithinSchedule(cfg)) {
+                      val now = System.currentTimeMillis()
+                      if (now - lastTamperMs > 25_000L) {
+                          lastTamperMs = now
+                          addEvent("📳 Telefon joyidan qimirlatildi yoki silkitildi!")
+                          val frame = latestFullJpeg.get()
+                          if (frame != null) {
+                              sendPhotoWithFallback(cfg, frame, "🚨 BUZG‘UNCHILIK!\nQo‘riqlash telefoni joyidan qo‘zg‘atildi!")
+                          } else {
+                              sendTelegramText(cfg, "🚨 BUZG‘UNCHILIK!\nQo‘riqlash telefoni joyidan qo‘zg‘atildi!")
+                          }
+                      }
+                  }
+                  checkPowerDisconnect(cfg)
+              }
+
+              override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+              private fun checkPowerDisconnect(cfg: JSONObject) {
+                  val statusIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                  val plugged = statusIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: -1
+                  val isCharging = plugged == BatteryManager.BATTERY_PLUGGED_AC ||
+                      plugged == BatteryManager.BATTERY_PLUGGED_USB ||
+                      plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS
+
+                  if (wasCharging && !isCharging && cfg.optBoolean("powerAlert", true)) {
+                      val now = System.currentTimeMillis()
+                      if (now - lastPowerAlertMs > 60_000L) {
+                          lastPowerAlertMs = now
+                          addEvent("🔌 220V elektr toki / zaryad uzildi!")
+                          sendTelegramText(cfg, "⚡ DIQQAT! Binoda 220V elektr toki uzildi (telefon batareyaga o‘tdi).")
+                      }
+                  }
+                  wasCharging = isCharging
+              }
+
+              private fun getBatteryPercent(): Int {
+                  val bm = getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+                  return bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+              }
+
+              private fun isWithinSchedule(cfg: JSONObject): Boolean {
+                  if (!cfg.optBoolean("schedEnabled", false)) return true
+                  val startStr = cfg.optString("schedStart", "22:00")
+                  val endStr = cfg.optString("schedEnd", "07:00")
+                  val startMin = parseHhMm(startStr) ?: return true
+                  val endMin = parseHhMm(endStr) ?: return true
+                  val nowStr = SimpleDateFormat("HH:mm", Locale.US).format(Date())
+                  val nowMin = parseHhMm(nowStr) ?: return true
+                  return if (startMin <= endMin) {
+                      nowMin in startMin..endMin
+                  } else {
+                      nowMin >= startMin || nowMin <= endMin
+                  }
+              }
+
+              private fun parseHhMm(s: String): Int? {
+                  val parts = s.trim().split(":")
+                  if (parts.size != 2) return null
+                  val h = parts[0].toIntOrNull() ?: return null
+                  val m = parts[1].toIntOrNull() ?: return null
+                  return h * 60 + m
+              }
+
+              private fun saveTodayCounts() {
+                  val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                  SecureStore.saveCounts(this, today, countEnterToday, countExitToday)
+              }
+
+              private fun imageProxyToJpeg(image: ImageProxy, quality: Int): ByteArray? {
+                  return try {
+                      val nv21 = yuv420ToNv21(image)
+                      val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
+                      val out = ByteArrayOutputStream()
+                      yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), quality, out)
+                      val raw = out.toByteArray()
+                      val rot = image.imageInfo.rotationDegrees
+                      if (rot == 0) return raw
+                      val bmp = BitmapFactory.decodeByteArray(raw, 0, raw.size) ?: return raw
+                      val matrix = Matrix().apply { postRotate(rot.toFloat()) }
+                      val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+                      val out2 = ByteArrayOutputStream()
+                      rotated.compress(Bitmap.CompressFormat.JPEG, quality, out2)
+                      out2.toByteArray()
+                  } catch (_: Exception) {
+                      null
+                  }
+              }
+
+              private fun yuv420ToNv21(image: ImageProxy): ByteArray {
+                  val w = image.width
+                  val h = image.height
+                  val yPlane = image.planes[0]
+                  val uPlane = image.planes[1]
+                  val vPlane = image.planes[2]
+                  val nv21 = ByteArray(w * h * 3 / 2)
+                  var pos = 0
+                  for (row in 0 until h) {
+                      val rowStart = row * yPlane.rowStride
+                      for (col in 0 until w) {
+                          nv21[pos++] = yPlane.buffer.get(rowStart + col * yPlane.pixelStride)
+                      }
+                  }
+                  val chromaH = h / 2
+                  val chromaW = w / 2
+                  for (row in 0 until chromaH) {
+                      val vRow = row * vPlane.rowStride
+                      val uRow = row * uPlane.rowStride
+                      for (col in 0 until chromaW) {
+                          nv21[pos++] = vPlane.buffer.get(vRow + col * vPlane.pixelStride)
+                          nv21[pos++] = uPlane.buffer.get(uRow + col * uPlane.pixelStride)
+                      }
+                  }
+                  return nv21
+              }
+
+              private fun bitmapToGray64x48(bmp: Bitmap): ByteArray {
+                  val gw = 64
+                  val gh = 48
+                  val scaled = Bitmap.createScaledBitmap(bmp, gw, gh, false)
+                  val out = ByteArray(gw * gh)
+                  var idx = 0
+                  for (y in 0 until gh) {
+                      for (x in 0 until gw) {
+                          val p = scaled.getPixel(x, y)
+                          val r = (p shr 16) and 0xFF
+                          val g = (p shr 8) and 0xFF
+                          val b = p and 0xFF
+                          out[idx++] = ((r * 30 + g * 59 + b * 11) / 100).toByte()
+                      }
+                  }
+                  return out
+              }
+
+              private fun playLocalAlarmBeep() {
+                  try {
+                      val tone = ToneGenerator(AudioManager.STREAM_ALARM, 100)
+                      tone.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 1400)
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun addEvent(text: String) {
+                  val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                  val item = JSONObject().apply {
+                      put("time", time)
+                      put("text", text)
+                  }
+                  synchronized(eventsList) {
+                      eventsList.add(0, item)
+                      if (eventsList.size > 40) eventsList.removeAt(eventsList.size - 1)
+                      val arr = JSONArray()
+                      eventsList.forEach { arr.put(it) }
+                      eventsJson = arr.toString()
+                  }
+              }
+
+              private fun createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val ch = NotificationChannel(
+                          CHANNEL_ID,
+                          "Qo‘riqlash Pro Xizmati",
+                          NotificationManager.IMPORTANCE_LOW
+                      )
+                      val nm = getSystemService(NotificationManager::class.java)
+                      nm?.createNotificationChannel(ch)
+                  }
+              }
+
+              private fun buildNotification(text: String): Notification {
+                  val openIntent = Intent(this, MainActivity::class.java)
+                  val pi = PendingIntent.getActivity(
+                      this, 0, openIntent,
+                      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                  )
+                  return NotificationCompat.Builder(this, CHANNEL_ID)
+                      .setContentTitle("Qo‘riqlash Pro")
+                      .setContentText(text)
+                      .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                      .setContentIntent(pi)
+                      .setOngoing(true)
+                      .build()
+              }
+
+              private fun updateNotification(text: String) {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm?.notify(NOTIF_ID, buildNotification(text))
+              }
+
+              private fun acquireWakeLock() {
+                  try {
+                      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                      wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "QoriqlashPro::GuardLock").apply {
+                          acquire(24 * 60 * 60 * 1000L)
+                      }
+                  } catch (_: Exception) {
+                  }
+              }
+
+              override fun onDestroy() {
+                  activeInstance = null
+                  isRunning = false
+                  isBurstRunning = false
+                  stopAllLoops()
+                  sensorManager?.unregisterListener(this)
+                  try { wakeLock?.release() } catch (_: Exception) {}
+                  lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+                  cameraExecutor.shutdownNow()
+                  networkExecutor.shutdownNow()
+                  super.onDestroy()
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/java/uz/qoriqlash/app/MainActivity.kt
+          package uz.qoriqlash.app
+
+          import android.Manifest
+          import android.annotation.SuppressLint
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.PowerManager
+          import android.provider.Settings
+          import android.util.Base64
+          import android.view.Gravity
+          import android.view.View
+          import android.webkit.JavascriptInterface
+          import android.webkit.PermissionRequest
+          import android.webkit.WebChromeClient
+          import android.webkit.WebSettings
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.FrameLayout
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.biometric.BiometricManager
+          import androidx.biometric.BiometricPrompt
+          import androidx.camera.view.PreviewView
+          import androidx.core.content.ContextCompat
+          import androidx.fragment.app.FragmentActivity
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.concurrent.TimeUnit
+
+          class MainActivity : FragmentActivity() {
+
+              private lateinit var webView: WebView
+              private lateinit var previewView: PreviewView
+              private var pendingPermissionRequest: PermissionRequest? = null
+
+              private val requestPermissionsLauncher =
+                  registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+                      pendingPermissionRequest?.let { req ->
+                          req.grant(req.resources)
+                          pendingPermissionRequest = null
+                      }
+                  }
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val root = FrameLayout(this).apply {
+                      setBackgroundColor(Color.parseColor("#050814"))
+                  }
+
+                  previewView = PreviewView(this).apply {
+                      implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+                      scaleType = PreviewView.ScaleType.FILL_CENTER
+                      visibility = View.GONE
+                  }
+
+                  webView = WebView(this).apply {
+                      setBackgroundColor(Color.TRANSPARENT)
+                      settings.javaScriptEnabled = true
+                      settings.domStorageEnabled = true
+                      settings.mediaPlaybackRequiresUserGesture = false
+                      settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+
+                      webViewClient = WebViewClient()
+                      webChromeClient = object : WebChromeClient() {
+                          override fun onPermissionRequest(request: PermissionRequest) {
+                              val needed = arrayOf(
+                                  Manifest.permission.CAMERA,
+                                  Manifest.permission.RECORD_AUDIO
+                              ).filter {
+                                  ContextCompat.checkSelfPermission(this@MainActivity, it) != PackageManager.PERMISSION_GRANTED
+                              }
+                              if (needed.isEmpty()) {
+                                  request.grant(request.resources)
+                              } else {
+                                  pendingPermissionRequest = request
+                                  requestPermissionsLauncher.launch(needed.toTypedArray())
+                              }
+                          }
+                      }
+
+                      addJavascriptInterface(CameraBridge(this@MainActivity, this, previewView), "Android")
+                      loadUrl("file:///android_asset/index.html")
+                  }
+
+                  val lp = FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      300,
+                      Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                  )
+                  root.addView(previewView, lp)
+                  root.addView(
+                      webView,
+                      FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT,
+                          FrameLayout.LayoutParams.MATCH_PARENT
+                      )
+                  )
+
+                  setContentView(root)
+                  MonitorForegroundService.previewSurfaceProvider.set(previewView.surfaceProvider)
+                  ensurePermissions()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  MonitorForegroundService.uiVisible.set(true)
+                  MonitorForegroundService.previewSurfaceProvider.set(previewView.surfaceProvider)
+                  MonitorForegroundService.rebindCameraIfRunning()
+              }
+
+              override fun onPause() {
+                  MonitorForegroundService.uiVisible.set(false)
+                  MonitorForegroundService.previewSurfaceProvider.set(null)
+                  MonitorForegroundService.rebindCameraIfRunning()
+                  super.onPause()
+              }
+
+              private fun ensurePermissions() {
+                  val perms = mutableListOf(
+                      Manifest.permission.CAMERA,
+                      Manifest.permission.RECORD_AUDIO
+                  )
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                      perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                  }
+                  val missing = perms.filter {
+                      ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+                  }
+                  if (missing.isNotEmpty()) {
+                      requestPermissionsLauncher.launch(missing.toTypedArray())
+                  }
+              }
+
+              private class CameraBridge(
+                  private val activity: FragmentActivity,
+                  private val webView: WebView,
+                  private val previewView: PreviewView
+              ) {
+                  @JavascriptInterface
+                  fun getDeviceId(): String = SecureStore.getDeviceId(activity)
+
+                  @JavascriptInterface
+                  fun getClientProfile(): String {
+                      return JSONObject().apply {
+                          put("id", SecureStore.getDeviceId(activity))
+                          put("name", SecureStore.getClientName(activity))
+                          put("phone", SecureStore.getClientPhone(activity))
+                          put("expiresAt", SecureStore.getRemoteExpires(activity))
+                          put("customToken", SecureStore.getCustomToken(activity))
+                      }.toString()
+                  }
+
+                  @JavascriptInterface
+                  fun saveCustomServerToken(token: String) {
+                      SecureStore.setCustomToken(activity, token)
+                      checkRemoteControl()
+                  }
+
+                  @JavascriptInterface
+                  fun registerClientProfile(name: String, phone: String) {
+                      SecureStore.setClientProfile(activity, name, phone)
+                      checkRemoteControl()
+                  }
+
+                  @JavascriptInterface
+                  fun checkRemoteControl() {
+                      Thread {
+                          val st = RemoteControlClient.syncNow(activity, MonitorForegroundService.isRunning)
+                          val escMsg = st.message.replace("\\", "\\\\").replace("'", "\\'")
+                          val escExp = st.expiresAt.replace("\\", "\\\\").replace("'", "\\'")
+                          val escSync = st.syncStatus.replace("\\", "\\\\").replace("'", "\\'")
+                          activity.runOnUiThread {
+                              webView.evaluateJavascript("window.onRemoteControlUpdated(${st.active}, '$escMsg', '$escExp', '$escSync');", null)
+                          }
+                      }.start()
+                  }
+
+                  @JavascriptInterface
+                  fun isRemoteActive(): Boolean = SecureStore.isRemoteActive(activity)
+
+                  @JavascriptInterface
+                  fun getRemoteMessage(): String = SecureStore.getRemoteMessage(activity)
+
+                  @JavascriptInterface
+                  fun isCreatorActivated(): Boolean = SecureStore.isCreatorActivated(activity)
+
+                  @JavascriptInterface
+                  fun activateCreatorCode(code: String): Boolean =
+                      SecureStore.verifyAndActivateCreatorCode(activity, code)
+
+                  @JavascriptInterface
+                  fun saveSecureConfig(json: String) {
+                      SecureStore.saveConfigJson(activity, json)
+                  }
+
+                  @JavascriptInterface
+                  fun loadSecureConfig(): String = SecureStore.loadConfigJson(activity)
+
+                  @JavascriptInterface
+                  fun hasPin(): Boolean = SecureStore.hasPin(activity)
+
+                  @JavascriptInterface
+                  fun setPin(pin: String): Boolean {
+                      val clean = pin.trim()
+                      if (clean.length < 4) return false
+                      SecureStore.setPin(activity, clean)
+                      return true
+                  }
+
+                  @JavascriptInterface
+                  fun verifyPin(pin: String): Boolean = SecureStore.checkPin(activity, pin)
+
+                  @JavascriptInterface
+                  fun getIpGridFrames(): String = MonitorForegroundService.buildGridSnapshotJson()
+
+                  @JavascriptInterface
+                  fun enrollFaceFromCurrentFrame(personName: String) {
+                      Thread {
+                          val frame = MonitorForegroundService.latestFullJpeg.get()
+                          val res = if (frame == null || frame.isEmpty()) {
+                              false to "Avval nazoratni yoqib, yuzingizni kameraga qarating"
+                          } else {
+                              FaceProfileManager.enrollFromJpeg(activity, personName, frame)
+                          }
+                          val escMsg = res.second.replace("\\", "\\\\").replace("'", "\\'")
+                          activity.runOnUiThread {
+                              webView.evaluateJavascript("window.onFaceEnrolled(${res.first}, '$escMsg');", null)
+                          }
+                      }.start()
+                  }
+
+                  @JavascriptInterface
+                  fun getKnownFaces(): String = FaceProfileManager.listProfilesSummary(activity)
+
+                  @JavascriptInterface
+                  fun removeKnownFace(id: String) {
+                      FaceProfileManager.removeProfile(activity, id)
+                  }
+
+                  @JavascriptInterface
+                  fun recordVideoNow() {
+                      activity.runOnUiThread {
+                          val i = Intent(activity, MonitorForegroundService::class.java).apply {
+                              action = MonitorForegroundService.ACTION_VIDEO_NOW
+                          }
+                          activity.startService(i)
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun promptBiometric(purpose: String) {
+                      activity.runOnUiThread {
+                          try {
+                              val bm = BiometricManager.from(activity)
+                              val canAuth = bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+                              if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
+                                  webView.evaluateJavascript("window.onBioResult('$purpose', false);", null)
+                                  return@runOnUiThread
+                              }
+                              val executor = ContextCompat.getMainExecutor(activity)
+                              val prompt = BiometricPrompt(
+                                  activity,
+                                  executor,
+                                  object : BiometricPrompt.AuthenticationCallback() {
+                                      override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                                          webView.evaluateJavascript("window.onBioResult('$purpose', true);", null)
+                                      }
+                                      override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                                          webView.evaluateJavascript("window.onBioResult('$purpose', false);", null)
+                                      }
+                                  }
+                              )
+                              val info = BiometricPrompt.PromptInfo.Builder()
+                                  .setTitle("Qo‘riqlash tasdig‘i")
+                                  .setSubtitle("Barmoq izi yoki yuz bilan tasdiqlang")
+                                  .setNegativeButtonText("PIN kiritish")
+                                  .build()
+                              prompt.authenticate(info)
+                          } catch (_: Exception) {
+                              webView.evaluateJavascript("window.onBioResult('$purpose', false);", null)
+                          }
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun detectChatId(token: String) {
+                      Thread {
+                          var foundId = ""
+                          var foundUser = ""
+                          try {
+                              val client = OkHttpClient.Builder()
+                                  .connectTimeout(5, TimeUnit.SECONDS)
+                                  .readTimeout(8, TimeUnit.SECONDS)
+                                  .build()
+                              val req = Request.Builder()
+                                  .url("https://api.telegram.org/bot${token.trim()}/getUpdates?limit=20")
+                                  .build()
+                              client.newCall(req).execute().use { resp ->
+                                  if (resp.isSuccessful) {
+                                      val root = JSONObject(resp.body?.string() ?: "")
+                                      if (root.optBoolean("ok", false)) {
+                                          val arr = root.optJSONArray("result") ?: JSONArray()
+                                          for (i in arr.length() - 1 downTo 0) {
+                                              val item = arr.optJSONObject(i) ?: continue
+                                              val msg = item.optJSONObject("message") ?: item.optJSONObject("channel_post") ?: continue
+                                              val chat = msg.optJSONObject("chat") ?: continue
+                                              val id = chat.optLong("id", 0L)
+                                              if (id != 0L) {
+                                                  foundId = id.toString()
+                                                  foundUser = chat.optString("username", chat.optString("first_name", ""))
+                                                  break
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
+                          } catch (_: Exception) {
+                          }
+                          val escId = foundId.replace("'", "")
+                          val escUser = foundUser.replace("\\", "\\\\").replace("'", "\\'")
+                          activity.runOnUiThread {
+                              webView.evaluateJavascript("window.onChatIdDetected('$escId', '$escUser');", null)
+                          }
+                      }.start()
+                  }
+
+                  @JavascriptInterface
+                  fun setPreviewRect(visible: Boolean, leftDp: Float, topDp: Float, widthDp: Float, heightDp: Float) {
+                      activity.runOnUiThread {
+                          if (!visible || widthDp <= 1f || heightDp <= 1f) {
+                              previewView.visibility = View.GONE
+                              return@runOnUiThread
+                          }
+                          val d = activity.resources.displayMetrics.density
+                          val lp = FrameLayout.LayoutParams(
+                              (widthDp * d).toInt(),
+                              (heightDp * d).toInt(),
+                              Gravity.TOP or Gravity.START
+                          ).apply {
+                              leftMargin = (leftDp * d).toInt()
+                              topMargin = (topDp * d).toInt()
+                          }
+                          previewView.layoutParams = lp
+                          if (previewView.visibility != View.VISIBLE) previewView.visibility = View.VISIBLE
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun requestIgnoreBattery() {
+                      activity.runOnUiThread {
+                          try {
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                  val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
+                                  if (!pm.isIgnoringBatteryOptimizations(activity.packageName)) {
+                                      val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                          data = Uri.parse("package:${activity.packageName}")
+                                      }
+                                      activity.startActivity(i)
+                                  }
+                              }
+                          } catch (_: Exception) {
+                          }
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun startOrUpdateBgMonitor(configJson: String) {
+                      if (!SecureStore.isRemoteActive(activity)) return
+                      SecureStore.saveConfigJson(activity, configJson)
+                      SecureStore.setWasRunning(activity, true)
+                      activity.runOnUiThread {
+                          val startIntent = Intent(activity, MonitorForegroundService::class.java).apply {
+                              action = MonitorForegroundService.ACTION_START
+                          }
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              activity.startForegroundService(startIntent)
+                          } else {
+                              activity.startService(startIntent)
+                          }
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun stopBgMonitor() {
+                      SecureStore.setWasRunning(activity, false)
+                      activity.runOnUiThread {
+                          previewView.visibility = View.GONE
+                          activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
+                              action = MonitorForegroundService.ACTION_STOP
+                          })
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun bgShotNow() {
+                      activity.runOnUiThread {
+                          activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
+                              action = MonitorForegroundService.ACTION_SHOT
+                          })
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun clearNativeEvents() {
+                      activity.runOnUiThread {
+                          activity.startService(Intent(activity, MonitorForegroundService::class.java).apply {
+                              action = MonitorForegroundService.ACTION_CLEAR_LOG
+                          })
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun getNativeEvents(): String = MonitorForegroundService.eventsJson
+
+                  @JavascriptInterface
+                  fun getBgState(): String {
+                      val o = JSONObject()
+                      o.put("running", MonitorForegroundService.isRunning)
+                      o.put("burst", MonitorForegroundService.isBurstRunning)
+                      o.put("burstCount", MonitorForegroundService.burstSentCount)
+                      o.put("status", MonitorForegroundService.lastStatusText)
+                      o.put("person", MonitorForegroundService.lastRecognizedPerson)
+                      o.put("enter", MonitorForegroundService.countEnterToday)
+                      o.put("exit", MonitorForegroundService.countExitToday)
+                      o.put("queueSize", OfflineQueue.size(activity))
+                      return o.toString()
+                  }
+              }
+          }
+          EOF
+
+          cat <<'EOF' > app/src/main/assets/index.html
+          <!DOCTYPE html>
+          <html lang="uz">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <title>Qo‘riqlash Pro</title>
+            <style>
+              * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+              body {
+                margin: 0; font-family: system-ui, -apple-system, sans-serif;
+                background: #050814; color: #e2e8f0; padding-bottom: 40px;
+              }
+              .header {
+                display: flex; align-items: center; justify-content: space-between;
+                padding: 14px 16px; background: #0b1120; border-bottom: 1px solid #1e293b;
+                position: sticky; top: 0; z-index: 20;
+              }
+              .brand { font-weight: 800; font-size: 17px; color: #00e5ff; letter-spacing: .5px; }
+              .sub-brand { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+              .icon-btn {
+                background: #1e293b; color: #fff; border: 1px solid #334155;
+                border-radius: 10px; padding: 8px 12px; font-size: 13px; font-weight: 600;
+              }
+              .card {
+                background: #0f172a; border: 1px solid #1e293b; border-radius: 16px;
+                margin: 12px; padding: 14px;
+              }
+              .card-title {
+                font-size: 13px; font-weight: 700; color: #38bdf8;
+                text-transform: uppercase; letter-spacing: .6px; margin-bottom: 10px;
+                display: flex; justify-content: space-between; align-items: center;
+              }
+              .preview-box {
+                width: 100%; height: 190px; background: #020617; border-radius: 12px;
+                border: 1px dashed #334155; display: flex; align-items: center;
+                justify-content: center; color: #64748b; font-size: 13px; overflow: hidden;
+              }
+              .grid-wrap {
+                display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+              }
+              .grid-item {
+                background: #020617; border: 1px solid #1e293b; border-radius: 10px;
+                overflow: hidden; position: relative; min-height: 110px;
+              }
+              .grid-item img { width: 100%; height: 110px; object-fit: cover; display: block; }
+              .grid-label {
+                position: absolute; bottom: 0; left: 0; right: 0;
+                background: rgba(2,6,23,.78); color: #f8fafc; font-size: 11px;
+                padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+              }
+              .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+              .btn {
+                flex: 1; padding: 12px; border-radius: 12px; border: none;
+                font-weight: 700; font-size: 14px; cursor: pointer; text-align: center;
+              }
+              .btn-start { background: #16a34a; color: #fff; }
+              .btn-stop { background: #dc2626; color: #fff; }
+              .btn-sec { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
+              .btn-accent { background: #0284c7; color: #fff; }
+              label { display: block; font-size: 12px; color: #94a3b8; margin: 10px 0 4px; }
+              input, select {
+                width: 100%; padding: 10px 12px; border-radius: 10px;
+                border: 1px solid #334155; background: #020617; color: #f8fafc; font-size: 14px;
+              }
+              .dev-card {
+                background: #020617; border: 1px solid #1e293b; border-radius: 12px;
+                padding: 10px; margin-top: 8px;
+              }
+              .dev-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 14px; }
+              .chk-row {
+                display: flex; align-items: center; justify-content: space-between;
+                padding: 8px 0; border-bottom: 1px solid #1e293b; font-size: 13px;
+              }
+              .chk-row input[type="checkbox"] { width: 20px; height: 20px; }
+              .stat-bar {
+                display: flex; justify-content: space-around; background: #020617;
+                padding: 10px; border-radius: 10px; margin-top: 8px; font-size: 12px;
+              }
+              .log-item {
+                font-size: 12px; padding: 6px 0; border-bottom: 1px solid #1e293b; color: #cbd5e1;
+              }
+              .overlay {
+                position: fixed; inset: 0; background: rgba(2,6,23,.97); z-index: 99;
+                display: none; flex-direction: column; align-items: center; justify-content: center;
+                padding: 24px; text-align: center;
+              }
+              .overlay.show { display: flex; }
+              .overlay h2 { color: #00e5ff; margin-bottom: 8px; }
+              .overlay p { color: #94a3b8; font-size: 14px; max-width: 340px; }
+              .overlay input { max-width: 300px; margin: 10px 0; text-align: center; }
+              .modal-zoom {
+                position: fixed; inset: 0; background: rgba(0,0,0,.92); z-index: 80;
+                display: none; flex-direction: column; align-items: center; justify-content: center; padding: 16px;
+              }
+              .modal-zoom.show { display: flex; }
+              .modal-zoom img { max-width: 100%; max-height: 80vh; border-radius: 12px; }
+            </style>
+          </head>
+          <body>
+
+            <!-- 1. OBUNA BLOK EKRANI -->
+            <div id="blockOverlay" class="overlay">
+              <h2 style="color:#f87171;">⛔ OBUNA TO‘XTATILGAN</h2>
+              <p id="blockReason">Obuna muddatingiz tugagan yoki faolsizlantirilgan.</p>
+              <p id="blockDevId" style="font-size:12px;color:#38bdf8;margin-top:8px;"></p>
+              <button class="btn btn-accent" style="max-width:260px;margin-top:16px;" onclick="recheckSub()">🔄 Holatni qayta tekshirish</button>
+            </div>
+
+            <!-- 2. MIJOZ RO'YXATDAN O'TISH EKRANI -->
+            <div id="registerOverlay" class="overlay">
+              <h2>👤 MIJOZ RO‘YXATDAN O‘TISHI</h2>
+              <p>Ilovadan foydalanish uchun ismingiz va telefon raqamingizni kiriting. Qurilma ID avtomatik biriktiriladi.</p>
+              <p id="regDevId" style="font-size:12px;color:#38bdf8;"></p>
+              <input id="regName" placeholder="Ismingiz (masalan: Jasur)" />
+              <input id="regPhone" placeholder="Telefon (+998901234567)" />
+              <button class="btn btn-start" style="max-width:300px;margin-top:10px;" onclick="submitRegistration()">✅ Ro‘yxatdan o‘tish va kirish</button>
+            </div>
+
+            <!-- 3. YARATUVCHI KODI (ALISA) -->
+            <div id="creatorOverlay" class="overlay">
+              <h2>🔐 FAOLLASHTIRISH KODI</h2>
+              <p>Ilovani birinchi marta ishga tushirish uchun maxsus ruxsat kodini kiriting.</p>
+              <input id="creatorCodeInput" placeholder="Maxsus kod" />
+              <button class="btn btn-accent" style="max-width:300px;margin-top:10px;" onclick="verifyCreator()">Tasdiqlash</button>
+            </div>
+
+            <!-- 4. PIN / BIOMETRIK QULF -->
+            <div id="pinOverlay" class="overlay">
+              <h2>🛡 XAVFSIZLIK QULFI</h2>
+              <p>Sozlamalarni ochish uchun PIN kodni kiriting.</p>
+              <input id="pinInput" type="password" inputmode="numeric" maxlength="8" placeholder="PIN kod" />
+              <button class="btn btn-accent" style="max-width:300px;margin-top:10px;" onclick="checkPinNow()">Ochish</button>
+            </div>
+
+            <!-- KATTALASHTIRILGAN KAMERA MODALI -->
+            <div id="zoomModal" class="modal-zoom" onclick="this.classList.remove('show')">
+              <img id="zoomImg" src="" />
+              <p id="zoomTitle" style="color:#fff;margin-top:10px;font-weight:700;"></p>
+            </div>
+
+            <div class="header">
+              <div>
+                <div class="brand">🛡 QO‘RIQLASH PRO</div>
+                <div class="sub-brand" id="subHeaderInfo">Yuklanmoqda...</div>
+                <div class="sub-brand" id="serverSyncBadge" style="color:#38bdf8;"></div>
+              </div>
+              <button class="icon-btn" onclick="toggleSettings()">⚙️ Sozlamalar</button>
+            </div>
+
+            <!-- ASOSIY MONITOR EKRANI -->
+            <div id="mainView">
+              <div class="card">
+                <div class="card-title">
+                  <span>📱 Telefon kamerasi</span>
+                  <span id="statusBadge" style="color:#94a3b8;">Tayyor</span>
+                </div>
+                <div id="previewAnchor" class="preview-box">Telefon kamerasi ko‘rinishi shu yerda chiqadi</div>
+                <div class="stat-bar">
+                  <span>📥 Kirish: <b id="cntIn">0</b></span>
+                  <span>📤 Chiqish: <b id="cntOut">0</b></span>
+                  <span>📦 Navbat: <b id="cntQueue">0</b></span>
+                </div>
+                <div class="row">
+                  <button class="btn btn-start" onclick="startGuard()">▶ BOSHLASH</button>
+                  <button class="btn btn-stop" onclick="stopGuard()">⏹ TO‘XTATISH</button>
+                </div>
+                <div class="row">
+                  <button class="btn btn-sec" onclick="Android.bgShotNow()">📸 Oniy rasm</button>
+                  <button class="btn btn-sec" onclick="Android.recordVideoNow()">🎥 10s Video</button>
+                </div>
+              </div>
+
+              <!-- IP KAMERALAR PARALLEL KATAGI -->
+              <div class="card">
+                <div class="card-title">
+                  <span>📹 Ulangan IP Kameralar / NVR</span>
+                  <span id="ipCountLabel">0 kanal</span>
+                </div>
+                <div id="ipGrid" class="grid-wrap"></div>
+              </div>
+
+              <!-- VOQEALAR JURNALI -->
+              <div class="card">
+                <div class="card-title">
+                  <span>📋 Voqealar jurnali</span>
+                  <span style="color:#f87171;font-size:11px;" onclick="Android.clearNativeEvents()">Tozalash</span>
+                </div>
+                <div id="eventsBox"></div>
+              </div>
+            </div>
+
+            <!-- SOZLAMALAR EKRANI -->
+            <div id="settingsView" style="display:none;">
+              <div class="card">
+                <div class="card-title"><span>1. Asosiy rejim va Kamera</span></div>
+                <label>Ishlash rejimi:</label>
+                <select id="cfgMode">
+                  <option value="phone">Faqat telefon kamerasi</option>
+                  <option value="ip">Faqat IP kameralar / NVR</option>
+                  <option value="both">Ikkalasi birga (Telefon + IP)</option>
+                </select>
+
+                <label>Telefon kamerasi:</label>
+                <select id="cfgLens">
+                  <option value="back">Orqa kamera</option>
+                  <option value="front">Old kamera</option>
+                </select>
+
+                <label>Sezgirlik (5 - 95):</label>
+                <input id="cfgSens" type="number" min="5" max="95" value="28" />
+
+                <label>Signallar orasidagi tanaffus (soniya):</label>
+                <input id="cfgCool" type="number" min="3" max="600" value="10" />
+
+                <label>IP kameralarni tekshirish oralig‘i (soniya):</label>
+                <input id="cfgIpSec" type="number" min="1" max="300" value="3" />
+              </div>
+
+              <!-- CHEKSIZ IP KAMERA / NVR QO'SHISH -->
+              <div class="card">
+                <div class="card-title">
+                  <span>2. IP Kameralar va NVR lar</span>
+                  <button class="btn-accent" style="border:none;border-radius:8px;padding:6px 10px;font-size:12px;" onclick="addDevicePrompt()">➕ Yangi kamera / NVR</button>
+                </div>
+                <div id="devicesList"></div>
+              </div>
+
+              <!-- TELEGRAM BOT SOZLAMALARI -->
+              <div class="card">
+                <div class="card-title"><span>3. Telegram Bot</span></div>
+                <label>Bot Token:</label>
+                <input id="cfgToken" placeholder="123456:ABC-DEF..." />
+                <label>Chat ID:</label>
+                <div class="row" style="margin-top:4px;">
+                  <input id="cfgChatId" style="flex:2;" placeholder="-100... yoki 1234567" />
+                  <button class="btn btn-accent" style="flex:1;padding:10px;" onclick="autoDetectChat()">Aniqlash</button>
+                </div>
+              </div>
+
+              <!-- AQLLI XAVFSIZLIK FUNKSIYALARI -->
+              <div class="card">
+                <div class="card-title"><span>4. Aqlli Xavfsizlik va Jadval</span></div>
+                <div class="chk-row"><span>Avto-Zoom (obyektni yaqinlashtirish)</span><input id="cfgZoom" type="checkbox" checked /></div>
+                <div class="chk-row"><span>Xavfda 10 soniyali video yuborish</span><input id="cfgAutoVideo" type="checkbox" checked /></div>
+                <div class="chk-row"><span>Eshikdan kirish-chiqish hisobi</span><input id="cfgDoor" type="checkbox" checked /></div>
+                <div class="chk-row"><span>Tovush trevogasi (shisha/qichqiriq)</span><input id="cfgAudio" type="checkbox" checked /></div>
+                <div class="chk-row"><span>Buzg‘unchilik nazorati (silkitish/yopish)</span><input id="cfgTamper" type="checkbox" checked /></div>
+                <div class="chk-row"><span>220V elektr uzilishi nazorati</span><input id="cfgPower" type="checkbox" checked /></div>
+                <div class="chk-row"><span>Mahalliy sirena ovozi</span><input id="cfgSiren" type="checkbox" /></div>
+                <div class="chk-row"><span>Jadval bo‘yicha qo‘riqlash</span><input id="cfgSchedOn" type="checkbox" /></div>
+                <div class="row">
+                  <div style="flex:1;"><label>Boshlanish:</label><input id="cfgSchedStart" type="time" value="22:00" /></div>
+                  <div style="flex:1;"><label>Tugash:</label><input id="cfgSchedEnd" type="time" value="07:00" /></div>
+                </div>
+              </div>
+
+              <!-- TANISH YUZLAR (WHITELIST) -->
+              <div class="card">
+                <div class="card-title"><span>5. Tanish Yuzlar (Signal bermaydi)</span></div>
+                <div class="row">
+                  <input id="faceNameInput" style="flex:2;" placeholder="Ism (masalan: O'zim)" />
+                  <button class="btn btn-accent" style="flex:1;padding:10px;" onclick="enrollFaceNow()">Kameradan olish</button>
+                </div>
+                <div id="facesList" style="margin-top:8px;"></div>
+              </div>
+
+              <!-- ADMIN SERVER VA PIN -->
+              <div class="card">
+                <div class="card-title"><span>6. Admin Server Tokeni va PIN</span></div>
+                <label>Admin Server Token (ixtiyoriy, zaxira ulanish):</label>
+                <div class="row" style="margin-top:4px;">
+                  <input id="customTokenInput" style="flex:2;" placeholder="ghp_..." />
+                  <button class="btn btn-accent" style="flex:1;padding:10px;" onclick="saveServerToken()">Ulash</button>
+                </div>
+                <div class="row">
+                  <input id="newPinInput" type="password" inputmode="numeric" style="flex:2;" placeholder="Yangi PIN (4+ raqam)" />
+                  <button class="btn btn-sec" style="flex:1;padding:10px;" onclick="saveNewPin()">PIN qo‘yish</button>
+                </div>
+                <div class="row">
+                  <button class="btn btn-sec" onclick="Android.requestIgnoreBattery()">🔋 Batareya cheklovini o‘chirish</button>
+                </div>
+              </div>
+
+              <div class="row" style="padding:0 12px;">
+                <button class="btn btn-start" onclick="saveAndCloseSettings()">💾 SAQLASH VA YOPISH</button>
+              </div>
+            </div>
+
+          <script>
+            let devices = [];
+            let settingsUnlocked = false;
+            let lastRectKey = "";
+            let lastEventsRaw = "";
+            let lastGridRaw = "";
+
+            function initApp() {
+              const devId = Android.getDeviceId();
+              document.getElementById('regDevId').innerText = "Qurilma ID: " + devId;
+              document.getElementById('blockDevId').innerText = "Sizning ID: " + devId;
+
+              const prof = JSON.parse(Android.getClientProfile() || "{}");
+              if (prof.customToken) {
+                document.getElementById('customTokenInput').value = prof.customToken;
+              }
+              if (!prof.name) {
+                document.getElementById('registerOverlay').classList.add('show');
+              } else {
+                updateHeaderSub(prof);
+                Android.checkRemoteControl();
+              }
+
+              if (!Android.isCreatorActivated()) {
+                document.getElementById('creatorOverlay').classList.add('show');
+              }
+
+              loadCfgToUi();
+              refreshFaces();
+              setInterval(syncUiLoop, 2500);
+            }
+
+            function updateHeaderSub(prof) {
+              const exp = prof.expiresAt ? (" · Obuna: " + prof.expiresAt) : "";
+              document.getElementById('subHeaderInfo').innerText = (prof.name || "Mijoz") + " (" + prof.id + ")" + exp;
+            }
+
+            function submitRegistration() {
+              const n = document.getElementById('regName').value.trim();
+              const p = document.getElementById('regPhone').value.trim();
+              if (!n) { alert("Iltimos, ismingizni kiriting!"); return; }
+              Android.registerClientProfile(n, p);
+              document.getElementById('registerOverlay').classList.remove('show');
+              const prof = JSON.parse(Android.getClientProfile() || "{}");
+              updateHeaderSub(prof);
+            }
+
+            function saveServerToken() {
+              const t = document.getElementById('customTokenInput').value.trim();
+              Android.saveCustomServerToken(t);
+              alert("Token saqlandi va server tekshirilmoqda!");
+            }
+
+            function verifyCreator() {
+              const code = document.getElementById('creatorCodeInput').value;
+              if (Android.activateCreatorCode(code)) {
+                document.getElementById('creatorOverlay').classList.remove('show');
+              } else {
+                alert("Kod noto‘g‘ri!");
+              }
+            }
+
+            window.onRemoteControlUpdated = function(active, msg, exp, syncSt) {
+              const ov = document.getElementById('blockOverlay');
+              if (!active) {
+                document.getElementById('blockReason').innerText = msg || "Obuna muddatingiz tugagan.";
+                ov.classList.add('show');
+              } else {
+                ov.classList.remove('show');
+              }
+              if (syncSt) {
+                document.getElementById('serverSyncBadge').innerText = syncSt;
+              }
+              const prof = JSON.parse(Android.getClientProfile() || "{}");
+              if (exp) prof.expiresAt = exp;
+              updateHeaderSub(prof);
+            };
+
+            function recheckSub() {
+              Android.checkRemoteControl();
+            }
+
+            function toggleSettings() {
+              const sv = document.getElementById('settingsView');
+              const mv = document.getElementById('mainView');
+              if (sv.style.display === 'none') {
+                if (Android.hasPin() && !settingsUnlocked) {
+                  document.getElementById('pinOverlay').classList.add('show');
+                  Android.promptBiometric('settings');
+                  return;
+                }
+                sv.style.display = 'block';
+                mv.style.display = 'none';
+                lastRectKey = "off";
+                Android.setPreviewRect(false, 0, 0, 0, 0);
+              } else {
+                sv.style.display = 'none';
+                mv.style.display = 'block';
+              }
+            }
+
+            window.onBioResult = function(purpose, ok) {
+              if (ok && purpose === 'settings') {
+                settingsUnlocked = true;
+                document.getElementById('pinOverlay').classList.remove('show');
+                toggleSettings();
+              }
+            };
+
+            function checkPinNow() {
+              const val = document.getElementById('pinInput').value;
+              if (Android.verifyPin(val)) {
+                settingsUnlocked = true;
+                document.getElementById('pinOverlay').classList.remove('show');
+                document.getElementById('pinInput').value = '';
+                toggleSettings();
+              } else {
+                alert("PIN noto‘g‘ri!");
+              }
+            }
+
+            function saveNewPin() {
+              const p = document.getElementById('newPinInput').value.trim();
+              if (Android.setPin(p)) {
+                alert("PIN saqlandi!");
+                document.getElementById('newPinInput').value = '';
+              } else {
+                alert("Kamida 4 ta raqam kiriting");
+              }
+            }
+
+            function loadCfgToUi() {
+              let c = {};
+              try { c = JSON.parse(Android.loadSecureConfig() || "{}"); } catch(e) {}
+              document.getElementById('cfgMode').value = c.mode || 'phone';
+              document.getElementById('cfgLens').value = c.lens || 'back';
+              document.getElementById('cfgSens').value = c.sens || 28;
+              document.getElementById('cfgCool').value = c.cool || 10;
+              document.getElementById('cfgIpSec').value = c.ipSec || 3;
+              document.getElementById('cfgToken').value = c.token || '';
+              document.getElementById('cfgChatId').value = c.chatId || '';
+              document.getElementById('cfgZoom').checked = c.autoZoom !== false;
+              document.getElementById('cfgAutoVideo').checked = c.autoVideo !== false;
+              document.getElementById('cfgDoor').checked = c.doorCounter !== false;
+              document.getElementById('cfgAudio').checked = c.audioAlert !== false;
+              document.getElementById('cfgTamper').checked = c.tamperAlert !== false;
+              document.getElementById('cfgPower').checked = c.powerAlert !== false;
+              document.getElementById('cfgSiren').checked = !!c.siren;
+              document.getElementById('cfgSchedOn').checked = !!c.schedEnabled;
+              document.getElementById('cfgSchedStart').value = c.schedStart || '22:00';
+              document.getElementById('cfgSchedEnd').value = c.schedEnd || '07:00';
+              devices = Array.isArray(c.devices) ? c.devices : [];
+              renderDevices();
+            }
+
+            function collectCfgFromUi() {
+              return {
+                mode: document.getElementById('cfgMode').value,
+                lens: document.getElementById('cfgLens').value,
+                sens: parseInt(document.getElementById('cfgSens').value || '28', 10),
+                cool: parseInt(document.getElementById('cfgCool').value || '10', 10),
+                ipSec: parseInt(document.getElementById('cfgIpSec').value || '3', 10),
+                token: document.getElementById('cfgToken').value.trim(),
+                chatId: document.getElementById('cfgChatId').value.trim(),
+                autoZoom: document.getElementById('cfgZoom').checked,
+                autoVideo: document.getElementById('cfgAutoVideo').checked,
+                doorCounter: document.getElementById('cfgDoor').checked,
+                audioAlert: document.getElementById('cfgAudio').checked,
+                tamperAlert: document.getElementById('cfgTamper').checked,
+                powerAlert: document.getElementById('cfgPower').checked,
+                siren: document.getElementById('cfgSiren').checked,
+                schedEnabled: document.getElementById('cfgSchedOn').checked,
+                schedStart: document.getElementById('cfgSchedStart').value,
+                schedEnd: document.getElementById('cfgSchedEnd').value,
+                devices: devices
+              };
+            }
+
+            function saveAndCloseSettings() {
+              const cfg = collectCfgFromUi();
+              const json = JSON.stringify(cfg);
+              Android.saveSecureConfig(json);
+              const st = JSON.parse(Android.getBgState() || "{}");
+              if (st.running) Android.startOrUpdateBgMonitor(json);
+              toggleSettings();
+            }
+
+            function startGuard() {
+              const cfg = collectCfgFromUi();
+              const json = JSON.stringify(cfg);
+              Android.saveSecureConfig(json);
+              Android.startOrUpdateBgMonitor(json);
+            }
+
+            function stopGuard() {
+              Android.stopBgMonitor();
+            }
+
+            function addDevicePrompt() {
+              devices.push({
+                name: "NVR / Kamera #" + (devices.length + 1),
+                type: "hikvision",
+                ip: "192.168.1.64",
+                port: "80",
+                user: "admin",
+                pass: "",
+                channels: "1,2",
+                customUrl: ""
+              });
+              renderDevices();
+            }
+
+            function removeDevice(idx) {
+              devices.splice(idx, 1);
+              renderDevices();
+            }
+
+            function renderDevices() {
+              const box = document.getElementById('devicesList');
+              box.innerHTML = '';
+              devices.forEach((d, i) => {
+                const div = document.createElement('div');
+                div.className = 'dev-card';
+                div.innerHTML = `
+                  <div class="dev-head">
+                    <span>#${i+1} ${d.name}</span>
+                    <button style="background:#dc2626;color:#fff;border:none;border-radius:6px;padding:4px 8px;" onclick="removeDevice(${i})">O‘chirish</button>
+                  </div>
+                  <label>Nomi:</label>
+                  <input value="${d.name}" onchange="devices[${i}].name=this.value" />
+                  <label>Turi:</label>
+                  <select onchange="devices[${i}].type=this.value;renderDevices();">
+                    <option value="hikvision" ${d.type==='hikvision'?'selected':''}>Hikvision NVR / IP</option>
+                    <option value="dahua" ${d.type==='dahua'?'selected':''}>Dahua NVR / IP</option>
+                    <option value="url" ${d.type==='url'?'selected':''}>To‘g‘ridan-to‘g‘ri Snapshot URL</option>
+                  </select>
+                  ${d.type === 'url' ? `
+                    <label>Snapshot URL:</label>
+                    <input value="${d.customUrl||''}" onchange="devices[${i}].customUrl=this.value" placeholder="http://.../snapshot.jpg" />
+                  ` : `
+                    <label>IP manzil:</label>
+                    <input value="${d.ip||''}" onchange="devices[${i}].ip=this.value" />
+                    <label>HTTP Port:</label>
+                    <input value="${d.port||'80'}" onchange="devices[${i}].port=this.value" />
+                    <label>Kanallar (vergul bilan, masalan: 1,2,3,4):</label>
+                    <input value="${d.channels||'1'}" onchange="devices[${i}].channels=this.value" />
+                  `}
+                  <div class="row">
+                    <div style="flex:1;"><label>Login:</label><input value="${d.user||''}" onchange="devices[${i}].user=this.value" /></div>
+                    <div style="flex:1;"><label>Parol:</label><input type="password" value="${d.pass||''}" onchange="devices[${i}].pass=this.value" /></div>
+                  </div>
+                `;
+                box.appendChild(div);
+              });
+            }
+
+            function autoDetectChat() {
+              const t = document.getElementById('cfgToken').value.trim();
+              if (!t) { alert("Avval Bot Token kiriting!"); return; }
+              Android.detectChatId(t);
+            }
+
+            window.onChatIdDetected = function(id, user) {
+              if (id) {
+                document.getElementById('cfgChatId').value = id;
+                alert("Chat ID topildi: " + id + " (" + user + ")");
+              } else {
+                alert("Topilmadi. Telegramda botingizga /start yuborib qayta bosing.");
+              }
+            };
+
+            function enrollFaceNow() {
+              const name = document.getElementById('faceNameInput').value.trim();
+              if (!name) { alert("Ism kiriting!"); return; }
+              Android.enrollFaceFromCurrentFrame(name);
+            }
+
+            window.onFaceEnrolled = function(ok, msg) {
+              alert(msg);
+              if (ok) {
+                document.getElementById('faceNameInput').value = '';
+                refreshFaces();
+              }
+            };
+
+            function refreshFaces() {
+              const list = JSON.parse(Android.getKnownFaces() || "[]");
+              const box = document.getElementById('facesList');
+              box.innerHTML = '';
+              list.forEach(f => {
+                const row = document.createElement('div');
+                row.className = 'chk-row';
+                row.innerHTML = `<span>👤 ${f.name}</span><button style="background:#dc2626;color:#fff;border:none;border-radius:6px;padding:4px 8px;" onclick="Android.removeKnownFace('${f.id}');refreshFaces();">O‘chirish</button>`;
+                box.appendChild(row);
+              });
+            }
+
+            function openZoom(b64, title) {
+              document.getElementById('zoomImg').src = "data:image/jpeg;base64," + b64;
+              document.getElementById('zoomTitle').innerText = title;
+              document.getElementById('zoomModal').classList.add('show');
+            }
+
+            function syncUiLoop() {
+              const st = JSON.parse(Android.getBgState() || "{}");
+              const badge = document.getElementById('statusBadge');
+              badge.innerText = st.running ? "🟢 ISHLAYAPTI" : "⚪ TO‘XTATILGAN";
+              badge.style.color = st.running ? "#4ade80" : "#94a3b8";
+              document.getElementById('cntIn').innerText = st.enter || 0;
+              document.getElementById('cntOut').innerText = st.exit || 0;
+              document.getElementById('cntQueue').innerText = st.queueSize || 0;
+
+              const mv = document.getElementById('mainView');
+              if (mv.style.display !== 'none' && st.running) {
+                const r = document.getElementById('previewAnchor').getBoundingClientRect();
+                const rk = Math.round(r.left)+"_"+Math.round(r.top)+"_"+Math.round(r.width)+"_"+Math.round(r.height);
+                if (rk !== lastRectKey) {
+                  lastRectKey = rk;
+                  Android.setPreviewRect(true, r.left, r.top, r.width, r.height);
+                }
+              } else if (lastRectKey !== "off") {
+                lastRectKey = "off";
+                Android.setPreviewRect(false, 0, 0, 0, 0);
+              }
+
+              const gridRaw = Android.getIpGridFrames() || "[]";
+              if (gridRaw !== lastGridRaw) {
+                lastGridRaw = gridRaw;
+                const frames = JSON.parse(gridRaw);
+                document.getElementById('ipCountLabel').innerText = frames.length + " kanal";
+                const grid = document.getElementById('ipGrid');
+                grid.innerHTML = '';
+                frames.forEach(item => {
+                  const cell = document.createElement('div');
+                  cell.className = 'grid-item';
+                  if (item.b64) {
+                    cell.innerHTML = `<img src="data:image/jpeg;base64,${item.b64}" /><div class="grid-label">🟢 ${item.title}</div>`;
+                    cell.onclick = () => openZoom(item.b64, item.title);
+                  } else {
+                    cell.innerHTML = `<div style="padding:36px 8px;text-align:center;font-size:11px;color:#64748b;">Ulanmoqda...</div><div class="grid-label">⚪ ${item.title}</div>`;
+                  }
+                  grid.appendChild(cell);
+                });
+              }
+
+              const evRaw = Android.getNativeEvents() || "[]";
+              if (evRaw !== lastEventsRaw) {
+                lastEventsRaw = evRaw;
+                const evs = JSON.parse(evRaw);
+                const eBox = document.getElementById('eventsBox');
+                eBox.innerHTML = evs.slice(0, 15).map(e => `<div class="log-item"><b>[${e.time}]</b> ${e.text}</div>`).join('');
+              }
+            }
+
+            window.onload = initApp;
+          </script>
+          </body>
+          </html>
+          EOF
+
+          cat <<'EOF' > admin/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "uz.qoriqlash.admin"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "uz.qoriqlash.admin"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 7
+                  versionName = "3.4-mukamal-admin"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("com.squareup.okhttp3:okhttp:4.12.0")
+          }
+          EOF
+
+          cat <<'EOF' > admin/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">Qo‘riqlash Admin</string>
+          </resources>
+          EOF
+
+          cat <<'EOF' > admin/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Qo‘riqlash Admin"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity
+                      android:name=".AdminActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat <<'EOF' > admin/src/main/java/uz/qoriqlash/admin/AdminActivity.kt
+          package uz.qoriqlash.admin
+
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.content.SharedPreferences
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Bundle
+          import android.util.Base64
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.Switch
+          import android.widget.TextView
+          import android.widget.Toast
+          import okhttp3.MediaType.Companion.toMediaType
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import okhttp3.RequestBody.Companion.toRequestBody
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.text.SimpleDateFormat
+          import java.util.Calendar
+          import java.util.Locale
+          import java.util.concurrent.TimeUnit
+
+          class AdminActivity : Activity() {
+
+              companion object {
+                  private const val USERS_API_URL = "https://api.github.com/repos/aaaa1111bbbbv-dot/mukamal/contents/users.json"
+                  private const val EMBEDDED_ADMIN_TOKEN = "__GH_SECRET_PLACEHOLDER__"
+              }
+
+              private lateinit var prefs: SharedPreferences
+              private lateinit var tokenInput: EditText
+              private lateinit var statsText: TextView
+              private lateinit var statusText: TextView
+              private lateinit var usersContainer: LinearLayout
+
+              private var usersSha = ""
+              private var usersArray = JSONArray()
+
+              private val client = OkHttpClient.Builder()
+                  .connectTimeout(8, TimeUnit.SECONDS)
+                  .readTimeout(12, TimeUnit.SECONDS)
+                  .build()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  prefs = getSharedPreferences("QoriqlashAdminPrefs", MODE_PRIVATE)
+
+                  val scroll = ScrollView(this).apply {
+                      setBackgroundColor(Color.parseColor("#050814"))
+                  }
+                  val layout = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(40, 60, 40, 80)
+                  }
+                  scroll.addView(layout)
+
+                  val title = TextView(this).apply {
+                      text = "🛡 QO‘RIQLASH ADMIN · OBUNALAR"
+                      setTextColor(Color.parseColor("#00E5FF"))
+                      textSize = 20f
+                      setTypeface(null, Typeface.BOLD)
+                      gravity = Gravity.CENTER
+                  }
+                  layout.addView(title)
+
+                  statusText = TextView(this).apply {
+                      text = "Holat: Yuklanmoqda..."
+                      setTextColor(Color.parseColor("#94A3B8"))
+                      setPadding(0, 14, 0, 14)
+                      gravity = Gravity.CENTER
+                  }
+                  layout.addView(statusText)
+
+                  statsText = TextView(this).apply {
+                      text = "Jami kirgan: 0 ta  |  Faol obuna: 0 ta  |  Hozir ishlatyapti: 0 ta"
+                      setTextColor(Color.parseColor("#4ADE80"))
+                      textSize = 14f
+                      setTypeface(null, Typeface.BOLD)
+                      gravity = Gravity.CENTER
+                      setBackgroundColor(Color.parseColor("#0F172A"))
+                      setPadding(24, 24, 24, 24)
+                  }
+                  layout.addView(statsText)
+
+                  val savedTok = prefs.getString("gh_token", "") ?: ""
+                  val defaultTok = if (savedTok.isNotEmpty()) savedTok
+                  else if (EMBEDDED_ADMIN_TOKEN.startsWith("ghp_") || EMBEDDED_ADMIN_TOKEN.startsWith("github_pat_")) EMBEDDED_ADMIN_TOKEN
+                  else ""
+
+                  layout.addView(makeLabel("GitHub Token (ghp_...):"))
+                  tokenInput = makeInput("ghp_xxxxxxxxxxxxxxxxxxxx").apply {
+                      setText(defaultTok)
+                  }
+                  layout.addView(tokenInput)
+
+                  val refreshBtn = Button(this).apply {
+                      text = "🔄 MIJOZLAR RO‘YXATINI YANGILASH"
+                      setBackgroundColor(Color.parseColor("#0284C7"))
+                      setTextColor(Color.WHITE)
+                      val lp = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      )
+                      lp.setMargins(0, 24, 0, 28)
+                      layoutParams = lp
+                      setOnClickListener {
+                          val t = tokenInput.text.toString().trim()
+                          if (t.isNotEmpty()) prefs.edit().putString("gh_token", t).apply()
+                          fetchUsers()
+                      }
+                  }
+                  layout.addView(refreshBtn)
+
+                  val listHeader = TextView(this).apply {
+                      text = "📋 RO‘YXATDAN O‘TGAN MIJOZLAR:"
+                      setTextColor(Color.parseColor("#00E5FF"))
+                      textSize = 14f
+                      setTypeface(null, Typeface.BOLD)
+                      setPadding(0, 8, 0, 16)
+                  }
+                  layout.addView(listHeader)
+
+                  usersContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                  }
+                  layout.addView(usersContainer)
+
+                  setContentView(scroll)
+                  fetchUsers()
+              }
+
+              private fun makeLabel(t: String): TextView = TextView(this).apply {
+                  text = t
+                  setTextColor(Color.LTGRAY)
+                  setPadding(0, 16, 0, 6)
+              }
+
+              private fun makeInput(hintText: String): EditText = EditText(this).apply {
+                  hint = hintText
+                  setHintTextColor(Color.GRAY)
+                  setTextColor(Color.WHITE)
+                  setBackgroundColor(Color.parseColor("#111827"))
+                  setPadding(24, 24, 24, 24)
+              }
+
+              private fun fetchUsers() {
+                  val tok = tokenInput.text.toString().trim()
+                  if (tok.isEmpty()) {
+                      statusText.text = "Avval GitHub Token (ghp_...) ni kiriting"
+                      return
+                  }
+                  statusText.text = "Mijozlar yuklanmoqda..."
+
+                  Thread {
+                      try {
+                          val req = Request.Builder()
+                              .url("$USERS_API_URL?t=${System.currentTimeMillis()}")
+                              .header("Authorization", "token $tok")
+                              .header("Accept", "application/vnd.github.v3+json")
+                              .build()
+
+                          client.newCall(req).execute().use { resp ->
+                              if (resp.isSuccessful) {
+                                  val body = JSONObject(resp.body?.string() ?: "{}")
+                                  usersSha = body.optString("sha", "")
+                                  val b64 = body.optString("content", "").replace("\n", "")
+                                  val decoded = String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
+                                  val root = JSONObject(decoded)
+                                  usersArray = root.optJSONArray("users") ?: JSONArray()
+
+                                  runOnUiThread {
+                                      statusText.text = "✅ Baza yangilandi"
+                                      statusText.setTextColor(Color.parseColor("#4ADE80"))
+                                      renderUsersList()
+                                  }
+                              } else {
+                                  val code = resp.code
+                                  runOnUiThread {
+                                      statusText.text = "❌ Xatolik ($code): Token yoki users.json faylini tekshiring"
+                                      statusText.setTextColor(Color.parseColor("#F87171"))
+                                  }
+                              }
+                          }
+                      } catch (e: Exception) {
+                          runOnUiThread {
+                              statusText.text = "❌ Tarmoq xatosi: ${e.message}"
+                              statusText.setTextColor(Color.parseColor("#F87171"))
+                          }
+                      }
+                  }.start()
+              }
+
+              private fun renderUsersList() {
+                  usersContainer.removeAllViews()
+                  val total = usersArray.length()
+                  var activeCount = 0
+                  var runningNowCount = 0
+
+                  for (i in 0 until total) {
+                      val u = usersArray.optJSONObject(i) ?: continue
+                      val isAct = u.optBoolean("active", true)
+                      val isMon = u.optBoolean("monitoring", false)
+                      if (isAct) activeCount++
+                      if (isAct && isMon) runningNowCount++
+
+                      usersContainer.addView(buildUserCard(i, u))
+                  }
+
+                  statsText.text = "Jami kirgan: $total ta  |  Faol obuna: $activeCount ta  |  Hozir ishlatyapti: $runningNowCount ta"
+                  if (total == 0) {
+                      val empty = TextView(this).apply {
+                          text = "Hali birorta mijoz ilovaga kirmagan."
+                          setTextColor(Color.GRAY)
+                          setPadding(16, 24, 16, 24)
+                      }
+                      usersContainer.addView(empty)
+                  }
+              }
+
+              private fun buildUserCard(index: Int, u: JSONObject): LinearLayout {
+                  val isAct = u.optBoolean("active", true)
+                  val isMon = u.optBoolean("monitoring", false)
+                  val name = u.optString("name", "Nomsiz mijoz")
+                  val phone = u.optString("phone", "")
+                  val id = u.optString("id", "")
+                  val model = u.optString("model", "")
+                  val regAt = u.optString("registeredAt", "-")
+                  val lastSeen = u.optString("lastSeen", "-")
+                  val expiresAt = u.optString("expiresAt", "Cheksiz")
+
+                  val cardBg = GradientDrawable().apply {
+                      setColor(Color.parseColor("#0F172A"))
+                      cornerRadius = 24f
+                      setStroke(3, if (isAct) Color.parseColor("#00E5FF") else Color.parseColor("#EF4444"))
+                  }
+
+                  return LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      background = cardBg
+                      setPadding(32, 28, 32, 28)
+                      val lp = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      )
+                      lp.setMargins(0, 0, 0, 24)
+                      layoutParams = lp
+
+                      val head = TextView(this@AdminActivity).apply {
+                          text = "${index + 1}. $name ${if (phone.isNotEmpty()) "($phone)" else ""}"
+                          setTextColor(Color.WHITE)
+                          textSize = 17f
+                          setTypeface(null, Typeface.BOLD)
+                      }
+                      addView(head)
+
+                      val info = TextView(this@AdminActivity).apply {
+                          text = buildString {
+                              appendLine("🆔 ID: $id  |  📱 $model")
+                              appendLine("📅 Ro‘yxatdan o‘tgan: $regAt")
+                              appendLine("🕒 Oxirgi faollik: $lastSeen")
+                              appendLine("⏳ Obuna muddati: $expiresAt")
+                              append("📡 Nazorat holati: ${if (isMon) "ISHLAYAPTI 🟢" else "KUTISHDA ⚪"}")
+                          }
+                          setTextColor(Color.parseColor("#CBD5E1"))
+                          textSize = 13f
+                          setPadding(0, 12, 0, 16)
+                      }
+                      addView(info)
+
+                      val sw = Switch(this@AdminActivity).apply {
+                          text = if (isAct) "✅ Obuna FAOL (Faqat shu mijoz uchun)" else "⛔ Obuna O‘CHIRILGAN (Bloklangan)"
+                          setTextColor(if (isAct) Color.parseColor("#4ADE80") else Color.parseColor("#F87171"))
+                          textSize = 14f
+                          isChecked = isAct
+                          setOnCheckedChangeListener { _, checked ->
+                              u.put("active", checked)
+                              if (!checked) {
+                                  u.put("note", "To‘lov muddati tugagani sababli obunangiz to‘xtatildi.")
+                              } else {
+                                  u.put("note", "")
+                              }
+                              saveUsersToGitHub("Mijoz holati o‘zgartirildi: $name -> $checked")
+                          }
+                      }
+                      addView(sw)
+
+                      val btnRow = LinearLayout(this@AdminActivity).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          setPadding(0, 16, 0, 0)
+                      }
+
+                      val plus30Btn = Button(this@AdminActivity).apply {
+                          text = "➕ +30 kun uzaytirish"
+                          setBackgroundColor(Color.parseColor("#16A34A"))
+                          setTextColor(Color.WHITE)
+                          textSize = 12f
+                          layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                              setMargins(0, 0, 12, 0)
+                          }
+                          setOnClickListener {
+                              val nextExp = extendDaysFromNow(30)
+                              u.put("expiresAt", nextExp)
+                              u.put("active", true)
+                              u.put("note", "")
+                              saveUsersToGitHub("$name obunasi $nextExp gacha uzaytirildi")
+                          }
+                      }
+                      btnRow.addView(plus30Btn)
+
+                      val editDateBtn = Button(this@AdminActivity).apply {
+                          text = "📅 Muddat / Xabar"
+                          setBackgroundColor(Color.parseColor("#334155"))
+                          setTextColor(Color.WHITE)
+                          textSize = 12f
+                          layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                          setOnClickListener { showEditUserDialog(u) }
+                      }
+                      btnRow.addView(editDateBtn)
+
+                      addView(btnRow)
+                  }
+              }
+
+              private fun extendDaysFromNow(days: Int): String {
+                  val cal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, days) }
+                  return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+              }
+
+              private fun showEditUserDialog(u: JSONObject) {
+                  val box = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(40, 24, 40, 10)
+                  }
+                  val dateIn = EditText(this).apply {
+                      hint = "Tugash sanasi (YYYY-MM-DD)"
+                      setText(u.optString("expiresAt", extendDaysFromNow(30)))
+                  }
+                  val noteIn = EditText(this).apply {
+                      hint = "Shaxsiy ogohlantirish xabari"
+                      setText(u.optString("note", ""))
+                  }
+                  box.addView(dateIn)
+                  box.addView(noteIn)
+
+                  AlertDialog.Builder(this)
+                      .setTitle(u.optString("name", "Mijoz sozlamasi"))
+                      .setView(box)
+                      .setPositiveButton("Saqlash") { _, _ ->
+                          u.put("expiresAt", dateIn.text.toString().trim())
+                          u.put("note", noteIn.text.toString().trim())
+                          saveUsersToGitHub("Mijoz muddati yangilandi")
+                      }
+                      .setNegativeButton("Bekor qilish", null)
+                      .show()
+              }
+
+              private fun saveUsersToGitHub(commitMsg: String) {
+                  val tok = tokenInput.text.toString().trim()
+                  if (tok.isEmpty()) return
+                  statusText.text = "Saqlanmoqda..."
+
+                  Thread {
+                      try {
+                          val root = JSONObject().apply { put("users", usersArray) }
+                          val encoded = Base64.encodeToString(root.toString(2).toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                          val body = JSONObject().apply {
+                              put("message", commitMsg)
+                              put("content", encoded)
+                              put("sha", usersSha)
+                          }
+                          val req = Request.Builder()
+                              .url(USERS_API_URL)
+                              .header("Authorization", "token $tok")
+                              .header("Accept", "application/vnd.github.v3+json")
+                              .put(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                              .build()
+
+                          client.newCall(req).execute().use { resp ->
+                              if (resp.isSuccessful) {
+                                  val res = JSONObject(resp.body?.string() ?: "{}")
+                                  usersSha = res.optJSONObject("content")?.optString("sha", usersSha) ?: usersSha
+                                  runOnUiThread {
+                                      statusText.text = "✅ $commitMsg"
+                                      statusText.setTextColor(Color.parseColor("#4ADE80"))
+                                      renderUsersList()
+                                  }
+                              } else {
+                                  runOnUiThread {
+                                      Toast.makeText(this, "Saqlashda xatolik: ${resp.code}", Toast.LENGTH_SHORT).show()
+                                      fetchUsers()
+                                  }
+                              }
+                          }
+                      } catch (e: Exception) {
+                          runOnUiThread {
+                              statusText.text = "❌ Xatolik: ${e.message}"
+                          }
+                      }
+                  }.start()
+              }
+          }
+          EOF
+
+          if [ -n "$GH_SECRET_TOKEN" ]; then
+            sed -i "s|__GH_SECRET_PLACEHOLDER__|$GH_SECRET_TOKEN|g" admin/src/main/java/uz/qoriqlash/admin/AdminActivity.kt
+          fi
+
+      - name: Build both APKs (Client + Admin)
+        run: |
+          gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload Client & Admin APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Qoriqlash-Mukamal-APKs
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            admin/build/outputs/apk/debug/admin-debug.apk
+          if-no-files-found: error
